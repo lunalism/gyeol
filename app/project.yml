@@ -30,6 +30,25 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.gyeol.Gyeol
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
+    scheme:
+      testTargets: [GyeolAppTests]
+  # Standalone test bundle (no TEST_HOST): the files under test are compiled
+  # directly into the bundle, so the tests run headlessly via xcodebuild.
+  GyeolAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+      - path: Sources/App/GyeolDocumentFile.swift
+      - path: Sources/App/MediaResolver.swift
+    dependencies:
+      - package: GyeolCore
+        product: GyeolCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.gyeol.GyeolAppTests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
   GyeolBare:
     type: application
     platform: macOS
