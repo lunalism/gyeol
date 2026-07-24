@@ -167,5 +167,78 @@ for spec in specs {
     }
 }
 
+// MARK: - Stop-path handoff verification
+//
+// Three ways playback stops must land on identical behavior: the frame the
+// handoff confirms is the frame the display PTS shows, residual zero on a
+// well-formed (explicit-timescale) file, and re-seeking to the confirmed
+// frame's centre keeps showing that same frame (player and app agree).
+
+func waitForRateZero(_ player: AVPlayer) async {
+    for _ in 0..<200 where player.rate != 0 {
+        try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+}
+
+func handoffCheck(_ harness: PlayerHarness, rate: FrameRate, label: String) async {
+    guard let pts = await harness.currentDisplayPTS() else {
+        check(false, "\(label): no display PTS at stop")
+        return
+    }
+    guard let snap = CMTimeAdapter.documentTime(snappingToFrameGrid: pts, projectRate: rate) else {
+        check(false, "\(label): PTS \(pts.value)/\(pts.timescale) did not snap")
+        return
+    }
+    let confirmed = FrameMapping.frameIndex(at: snap.time, rate: rate)
+    check(snap.residualTickNumerator == 0, "\(label): residual \(snap.residualTickNumerator)/\(snap.residualTickDenominator) ≠ 0")
+    // Re-seek from the confirmed index (the handoff's final step) and
+    // confirm the displayed frame does not move.
+    await harness.player.seek(
+        to: CMTimeAdapter.cmTimeForSeek(toFrame: confirmed, projectRate: rate),
+        toleranceBefore: .zero, toleranceAfter: .zero)
+    if let pts2 = await harness.currentDisplayPTS(),
+       let snap2 = CMTimeAdapter.documentTime(snappingToFrameGrid: pts2, projectRate: rate) {
+        let after = FrameMapping.frameIndex(at: snap2.time, rate: rate)
+        check(after == confirmed, "\(label): reseek moved frame \(confirmed) → \(after)")
+        print("  \(label): confirmed frame \(confirmed), residual 0, reseek stable")
+    } else {
+        check(false, "\(label): no display PTS after reseek")
+    }
+}
+
+print("\n== stop-path handoff")
+for spec in specs where spec.label != "59.94" {
+    let url = mediaDir.appendingPathComponent("seek-\(spec.label)-x.mov")
+    let harness = try await PlayerHarness(url: url)
+    print("-- \(spec.label) fps (explicit timescale)")
+
+    // Path 1: user pause mid-file.
+    await harness.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+    harness.player.play()
+    try await Task.sleep(nanoseconds: 800_000_000)
+    harness.player.pause()
+    await waitForRateZero(harness.player)
+    await handoffCheck(harness, rate: spec.rate, label: "pause mid-file")
+
+    // Path 2: playing to the end of the file.
+    let nearEnd = spec.frameCount - 8
+    await harness.player.seek(
+        to: CMTimeAdapter.cmTimeForSeek(toFrame: nearEnd, projectRate: spec.rate),
+        toleranceBefore: .zero, toleranceAfter: .zero)
+    harness.player.play()
+    await waitForRateZero(harness.player)  // AVPlayer stops itself at the end
+    await handoffCheck(harness, rate: spec.rate, label: "end of file")
+
+    // Path 3: pause immediately after a seek.
+    await harness.player.seek(
+        to: CMTimeAdapter.cmTimeForSeek(toFrame: 40, projectRate: spec.rate),
+        toleranceBefore: .zero, toleranceAfter: .zero)
+    harness.player.play()
+    try await Task.sleep(nanoseconds: 30_000_000)
+    harness.player.pause()
+    await waitForRateZero(harness.player)
+    await handoffCheck(harness, rate: spec.rate, label: "pause right after seek")
+}
+
 print(failures == 0 ? "\nALL CHECKS PASSED" : "\n\(failures) CHECK(S) FAILED")
 exit(failures == 0 ? 0 : 1)

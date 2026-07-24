@@ -28,7 +28,7 @@ struct ContentView: View {
                 } label: { Image(systemName: "backward.frame.fill") }
                     .disabled(controller.loadState != .ready || controller.isPlaying)
                 Button {
-                    Task { await controller.togglePlayPause() }
+                    controller.togglePlayPause()
                 } label: {
                     Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
                 }

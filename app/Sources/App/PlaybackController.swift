@@ -41,6 +41,7 @@ final class PlaybackController {
 
     private var videoOutput: AVPlayerItemVideoOutput?
     private var timeObserver: Any?
+    private var rateObservation: NSKeyValueObservation?
 
     // MARK: - Open
 
@@ -84,6 +85,7 @@ final class PlaybackController {
             player.replaceCurrentItem(with: item)
 
             playheadFrame = 0
+            installRateObservationIfNeeded()
             await seekToPlayhead()
             loadState = .ready
         } catch {
@@ -93,10 +95,15 @@ final class PlaybackController {
 
     // MARK: - Transport
 
-    func togglePlayPause() async {
+    func togglePlayPause() {
         guard loadState == .ready else { return }
         if isPlaying {
-            await pauseAndSnap()
+            // No handoff here. Stopping has more than one entry point —
+            // user pause, reaching the end of the file, and whatever M2
+            // adds (clip end, range end, edit interruption). They all
+            // funnel through the rate observation below; hooking actions
+            // one by one means missing whichever path gets added next.
+            player.pause()
         } else {
             installClockObserverIfNeeded()
             isPlaying = true
@@ -116,9 +123,31 @@ final class PlaybackController {
 
     // MARK: - The principle-8 handoff
 
-    /// Pause, then: snap what the player reports to a frame ONCE, take that
-    /// index as truth, and seek back to the CMTime derived from the index so
-    /// player and app agree again.
+    /// "Stopping" is defined as the player's rate becoming zero — observed,
+    /// not inferred from our own actions. This is the one signal every stop
+    /// path shares: user pause, end of file, and future M2 stops.
+    private func installRateObservationIfNeeded() {
+        guard rateObservation == nil else { return }
+        rateObservation = player.observe(\.rate, options: [.new]) { [weak self] _, change in
+            guard let newRate = change.newValue, newRate == 0 else { return }
+            // KVO delivers on an arbitrary thread; state lives on MainActor.
+            Task { @MainActor [weak self] in
+                await self?.playbackDidStop()
+            }
+        }
+    }
+
+    private func playbackDidStop() async {
+        // Seeks while paused also report rate 0; only a transition out of
+        // playing is a stop.
+        guard isPlaying else { return }
+        isPlaying = false
+        await snapToReportedFrame()
+    }
+
+    /// The stop handoff: snap what the player reports to a frame ONCE, take
+    /// that index as truth, and seek back to the CMTime derived from the
+    /// index so player and app agree again.
     ///
     /// "What the player reports" is the displayed frame's PTS from
     /// `AVPlayerItemVideoOutput`, not `currentTime()`. The wall clock sits
@@ -128,9 +157,7 @@ final class PlaybackController {
     /// while the previous frame is still displaying. The displayed frame's
     /// PTS is a boundary time, which is the input shape the adapter's snap
     /// was measured against (docs/m1-asset-timescale-probe.md).
-    private func pauseAndSnap() async {
-        player.pause()
-        isPlaying = false
+    private func snapToReportedFrame() async {
         guard let rate = projectRate, let output = videoOutput else { return }
 
         let itemTime = player.currentTime()
