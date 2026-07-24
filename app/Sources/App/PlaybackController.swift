@@ -132,6 +132,12 @@ final class PlaybackController {
         }
     }
 
+    /// Entry point for failures that happen before `open(url:)` can run at
+    /// all (e.g. the file importer itself failing).
+    func reportOpenFailure(_ message: String) {
+        loadState = .failed(message)
+    }
+
     /// A failed open leaves the controller empty-with-an-error, never a mix
     /// of the previous file's state and the new file's (F5).
     private func clearLoadedState(failure: String) {

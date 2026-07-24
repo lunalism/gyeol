@@ -171,7 +171,7 @@ private struct FixtureWorld {
             reference: world.document.media[world.mediaID]!,
             bookmark: nil,
             packageURL: world.packageURL)
-        #expect(resolution == .needsReconnect)
+        #expect(resolution == .needsReconnect(.fingerprintMismatch))
     }
 
     @Test func missingFileNeedsReconnect() throws {
@@ -182,7 +182,28 @@ private struct FixtureWorld {
             reference: world.document.media[world.mediaID]!,
             bookmark: nil,
             packageURL: world.packageURL)
-        #expect(resolution == .needsReconnect)
+        #expect(resolution == .needsReconnect(.fileNotFound))
+    }
+
+    /// F8: an IO failure reading the candidate is NOT a fingerprint
+    /// mismatch — the reason must survive to the caller.
+    @Test func unreadableFileIsDistinctFromMismatch() throws {
+        let world = try FixtureWorld()
+        try world.writePackage()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o000], ofItemAtPath: world.mediaURL.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o644], ofItemAtPath: world.mediaURL.path)
+        }
+        let resolution = MediaResolver.resolve(
+            reference: world.document.media[world.mediaID]!,
+            bookmark: nil,
+            packageURL: world.packageURL)
+        guard case .needsReconnect(.fileUnreadable) = resolution else {
+            Issue.record("expected fileUnreadable, got \(resolution)")
+            return
+        }
     }
 
     @Test func healedBookmarkResolvesToTheSameFile() throws {

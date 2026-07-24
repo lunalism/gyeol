@@ -43,8 +43,13 @@ struct ContentView: View {
         }
         .padding()
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.movie]) { result in
-            if case .success(let url) = result {
+            switch result {
+            case .success(let url):
                 Task { await controller.open(url: url) }
+            case .failure(let error):
+                // F10: a dropped failure is silent loss (PRD 7.4-6) even
+                // when nothing crashes. Same surface as any failed open.
+                controller.reportOpenFailure(String(describing: error))
             }
         }
     }

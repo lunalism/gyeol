@@ -1,20 +1,36 @@
 import CryptoKit
 import Foundation
 import GyeolCore
+import os
 
 /// App-layer media file resolution (PRD §5.1 triple reference, §5.6.8
 /// self-healing). GyeolCore stores locators; this is the only place that
 /// touches the filesystem to resolve them.
+///
+/// NOTE (F4, deliberate debt): everything here is synchronous IO plus a
+/// 4 MiB hash. Fine while tests are the only caller; it becomes a real
+/// MainActor stall the moment the document-open path calls it directly,
+/// and it connects to the open decision of how fingerprints get computed
+/// at import time. Revisit before wiring resolution into document open.
 enum MediaResolver {
+    private static let log = Logger(subsystem: "dev.gyeol.Gyeol", category: "MediaResolver")
+
+    /// Why a reconnect is needed. An unreadable file is NOT the same
+    /// situation as a different file (F8) — the distinction must survive
+    /// up to whatever UI or log finally shows it.
+    enum ReconnectReason: Equatable {
+        case fileNotFound
+        case fingerprintMismatch
+        case fileUnreadable(String)
+    }
+
     enum Resolution: Equatable {
         case resolved(URL)
-        /// A healed resolution: the file was found by relative path, the
-        /// fingerprint MATCHED, and `freshBookmark` should replace the
-        /// sidecar entry. The document body is untouched by this.
+        /// A healed resolution: the file was found, the fingerprint
+        /// MATCHED, and `freshBookmark` should replace the sidecar entry.
+        /// The document body is untouched by this.
         case resolvedAndHealed(URL, freshBookmark: Data)
-        /// Bookmark and relative path both failed (or the fingerprint did
-        /// not match): the reconnect UI's case (S6).
-        case needsReconnect
+        case needsReconnect(ReconnectReason)
     }
 
     /// Resolution order (PRD §5.6.8):
@@ -42,9 +58,13 @@ enum MediaResolver {
                     // only under the same rule as healing — fingerprint
                     // first.
                     if let fingerprint = reference.contentFingerprint,
-                       fingerprintMatches(fingerprint, at: url),
-                       let fresh = try? url.bookmarkData() {
-                        return .resolvedAndHealed(url, freshBookmark: fresh)
+                       case .match = check(fingerprint, at: url) {
+                        if let fresh = try? url.bookmarkData() {
+                            return .resolvedAndHealed(url, freshBookmark: fresh)
+                        }
+                        // F9: correct to continue, wrong to be silent —
+                        // the stale entry stays and will retry next open.
+                        log.warning("stale bookmark refresh failed for \(url.path, privacy: .public); keeping stale entry")
                     }
                     return .resolved(url)
                 }
@@ -56,7 +76,7 @@ enum MediaResolver {
         let candidate = packageURL.deletingLastPathComponent()
             .appendingPathComponent(reference.relativePath)
         guard FileManager.default.fileExists(atPath: candidate.path) else {
-            return .needsReconnect
+            return .needsReconnect(.fileNotFound)
         }
 
         // Fingerprint gate. A reference without a fingerprint cannot prove
@@ -64,16 +84,33 @@ enum MediaResolver {
         guard let fingerprint = reference.contentFingerprint else {
             return .resolved(candidate)
         }
-        guard fingerprintMatches(fingerprint, at: candidate) else {
-            return .needsReconnect
+        switch check(fingerprint, at: candidate) {
+        case .match:
+            guard let fresh = try? candidate.bookmarkData() else {
+                // F9: healing failed but resolution succeeded. Surfaced in
+                // the log rather than swallowed; the sidecar entry simply
+                // stays absent and the relative path keeps working.
+                log.warning("bookmark regeneration failed for \(candidate.path, privacy: .public); resolved without healing")
+                return .resolved(candidate)
+            }
+            return .resolvedAndHealed(candidate, freshBookmark: fresh)
+        case .mismatch:
+            return .needsReconnect(.fingerprintMismatch)
+        case .unreadable(let reason):
+            // F8: an IO failure is not evidence of a different file. Keep
+            // the distinction all the way up.
+            log.error("cannot fingerprint \(candidate.path, privacy: .public): \(reason, privacy: .public)")
+            return .needsReconnect(.fileUnreadable(reason))
         }
-        guard let fresh = try? candidate.bookmarkData() else {
-            return .resolved(candidate)
-        }
-        return .resolvedAndHealed(candidate, freshBookmark: fresh)
     }
 
     // MARK: - Fingerprint
+
+    enum FingerprintCheck: Equatable {
+        case match
+        case mismatch
+        case unreadable(String)
+    }
 
     /// The app layer owns the algorithm (Core only stores the value):
     /// SHA-256 over the first 4 MiB, plus the exact byte size. The prefix
@@ -81,20 +118,27 @@ enum MediaResolver {
     /// same-prefix truncations.
     static let fingerprintPrefixLength = 4 * 1024 * 1024
 
-    static func fingerprint(of url: URL) -> ContentFingerprint? {
-        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int64,
-              let handle = try? FileHandle(forReadingFrom: url) else {
-            return nil
+    static func check(_ expected: ContentFingerprint, at url: URL) -> FingerprintCheck {
+        do {
+            let actual = try readFingerprint(at: url)
+            return actual == expected ? .match : .mismatch
+        } catch {
+            return .unreadable(String(describing: error))
         }
-        defer { try? handle.close() }
-        guard let prefix = try? handle.read(upToCount: fingerprintPrefixLength) else {
-            return nil
-        }
-        return ContentFingerprint(value: Data(SHA256.hash(data: prefix)), byteSize: size)
     }
 
-    static func fingerprintMatches(_ expected: ContentFingerprint, at url: URL) -> Bool {
-        guard let actual = fingerprint(of: url) else { return false }
-        return actual == expected
+    static func fingerprint(of url: URL) -> ContentFingerprint? {
+        try? readFingerprint(at: url)
+    }
+
+    private static func readFingerprint(at url: URL) throws -> ContentFingerprint {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let size = attributes[.size] as? Int64 else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let prefix = try handle.read(upToCount: fingerprintPrefixLength) ?? Data()
+        return ContentFingerprint(value: Data(SHA256.hash(data: prefix)), byteSize: size)
     }
 }
