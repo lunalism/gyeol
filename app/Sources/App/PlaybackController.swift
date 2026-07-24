@@ -40,8 +40,24 @@ final class PlaybackController {
     private(set) var lastStopReport: String?
 
     private var videoOutput: AVPlayerItemVideoOutput?
-    private var timeObserver: Any?
-    private var rateObservation: NSKeyValueObservation?
+    // nonisolated(unsafe): these two are written only from MainActor code
+    // paths, and read once more from the nonisolated deinit below — the
+    // narrow escape hatch that makes the teardown compile under Swift 6.
+    nonisolated(unsafe) private var timeObserver: Any?
+    nonisolated(unsafe) private var rateObservation: NSKeyValueObservation?
+
+    deinit {
+        // Both observers are registered on `player`, which the controller
+        // owns for its whole life — harmless today, a leak the moment M2
+        // makes the controller per-document (F6). Apple requires explicit
+        // removeTimeObserver for every periodic observer. Stored-property
+        // access is legal in a nonisolated deinit; neither call touches
+        // MainActor state.
+        if let timeObserver {
+            player.removeTimeObserver(timeObserver)
+        }
+        rateObservation?.invalidate()
+    }
 
     /// Transport generation counter. Every transport mutation — play, stop
     /// handoff, step, open — bumps it; any async continuation that finds a
@@ -278,9 +294,13 @@ final class PlaybackController {
     private func installClockObserverIfNeeded() {
         guard timeObserver == nil else { return }
         timeObserver = player.addPeriodicTimeObserver(
+            // ⚠️ `queue: .main` is LOAD-BEARING: the closure below enters
+            // MainActor via assumeIsolated, which traps at runtime on any
+            // other queue (F3). Change this argument and that call together.
             forInterval: CMTime(value: 1, timescale: 30), queue: .main
         ) { [weak self] time in
-            // queue: .main makes MainActor assumption sound.
+            // Sound ONLY because the observer above registers on .main —
+            // see the queue argument's comment before touching either side.
             MainActor.assumeIsolated {
                 guard let self, self.isPlaying else { return }
                 self.clockDisplay = String(format: "%.3f s (display only)", time.seconds)
