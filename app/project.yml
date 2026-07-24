@@ -41,6 +41,7 @@ targets:
       - Tests
       - path: Sources/App/GyeolDocumentFile.swift
       - path: Sources/App/MediaResolver.swift
+      - path: Sources/App/PlaybackController.swift
     dependencies:
       - package: GyeolCore
         product: GyeolCore

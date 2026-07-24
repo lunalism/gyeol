@@ -43,35 +43,53 @@ final class PlaybackController {
     private var timeObserver: Any?
     private var rateObservation: NSKeyValueObservation?
 
+    /// Transport generation counter. Every transport mutation — play, stop
+    /// handoff, step, open — bumps it; any async continuation that finds a
+    /// different epoch after an await has been superseded and must apply
+    /// NOTHING. This is PRD 7.4-8's atomic-handoff rule implemented as one
+    /// mechanism: guarding each interleaving separately (pause-then-resume,
+    /// handoff-interrupted, open-during-play, superseded seek) would miss
+    /// the next interleaving nobody thought of.
+    private var transportEpoch = 0
+
     // MARK: - Open
 
     func open(url: URL) async {
+        // Transport reset FIRST: replacing the item under a playing player
+        // fires the rate observation against the new item (F5).
+        transportEpoch += 1
+        let epoch = transportEpoch
+        player.pause()
+        isPlaying = false
         loadState = .loading
         lastPauseReport = nil
         let asset = AVURLAsset(url: url)
         do {
+            // Everything loads into locals; state is committed only after
+            // the last throwing step, so a failed open can never leave a
+            // half-populated mix of two files (F5).
             let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard epoch == transportEpoch else { return }  // superseded by a newer open
             guard let track = tracks.first else {
-                loadState = .failed("no video track in \(url.lastPathComponent)")
+                clearLoadedState(failure: "no video track in \(url.lastPathComponent)")
                 return
             }
             let nominal = try await track.load(.nominalFrameRate)
             let duration = try await asset.load(.duration)
+            guard epoch == transportEpoch else { return }
             guard let rate = Self.nearestSupportedRate(toNominal: nominal) else {
-                loadState = .failed("unsupported frame rate \(nominal)")
+                clearLoadedState(failure: "unsupported frame rate \(nominal)")
                 return
             }
-            projectRate = rate
 
             // Exact conversion only. If the container timescale does not
             // divide 120000 the duration is off-grid; we skip the upper
             // clamp instead of rounding (see `frameCount` doc).
+            var newFrameCount: Int?
             if duration.isNumeric, duration.timescale > 0,
                let durationTime = try? RationalTime(value: duration.value, timescale: duration.timescale),
                let docDuration = DocumentTime(exactly: durationTime) {
-                frameCount = FrameMapping.frameCount(for: docDuration, rate: rate)
-            } else {
-                frameCount = nil
+                newFrameCount = FrameMapping.frameCount(for: docDuration, rate: rate)
             }
 
             let item = AVPlayerItem(asset: asset)
@@ -81,16 +99,32 @@ final class PlaybackController {
             // is a wall clock and lands mid-frame.
             let output = AVPlayerItemVideoOutput(pixelBufferAttributes: nil)
             item.add(output)
+
+            // Commit point — all or nothing.
+            projectRate = rate
+            frameCount = newFrameCount
             videoOutput = output
             player.replaceCurrentItem(with: item)
-
             playheadFrame = 0
             installRateObservationIfNeeded()
-            await seekToPlayhead()
+            await seekToPlayhead(epoch: epoch)
+            guard epoch == transportEpoch else { return }
             loadState = .ready
         } catch {
-            loadState = .failed(String(describing: error))
+            guard epoch == transportEpoch else { return }
+            clearLoadedState(failure: String(describing: error))
         }
+    }
+
+    /// A failed open leaves the controller empty-with-an-error, never a mix
+    /// of the previous file's state and the new file's (F5).
+    private func clearLoadedState(failure: String) {
+        player.replaceCurrentItem(with: nil)
+        projectRate = nil
+        frameCount = nil
+        videoOutput = nil
+        playheadFrame = 0
+        loadState = .failed(failure)
     }
 
     // MARK: - Transport
@@ -105,6 +139,10 @@ final class PlaybackController {
             // one by one means missing whichever path gets added next.
             player.pause()
         } else {
+            // Resuming voids any in-flight stop handoff (F2) and any stop
+            // event still queued behind us (F1): the former checks the
+            // epoch, the latter checks player.rate.
+            transportEpoch += 1
             installClockObserverIfNeeded()
             isPlaying = true
             player.play()
@@ -113,12 +151,14 @@ final class PlaybackController {
 
     func step(by delta: Int) async {
         guard loadState == .ready, !isPlaying, projectRate != nil else { return }
+        transportEpoch += 1
+        let epoch = transportEpoch
         var target = max(0, playheadFrame + delta)
         if let count = frameCount {
             target = min(target, max(0, count - 1))
         }
         playheadFrame = target
-        await seekToPlayhead()
+        await seekToPlayhead(epoch: epoch)
     }
 
     // MARK: - The principle-8 handoff
@@ -137,12 +177,17 @@ final class PlaybackController {
         }
     }
 
-    private func playbackDidStop() async {
-        // Seeks while paused also report rate 0; only a transition out of
-        // playing is a stop.
-        guard isPlaying else { return }
+    // Internal (not private) so the F1 interleaving test can invoke the
+    // handoff exactly the way a stale queued KVO task would.
+    func playbackDidStop() async {
+        // Seeks while paused also report rate 0 (first guard); and a stop
+        // event that was queued behind a resume is stale — the player is
+        // moving again, and player.rate is the ground truth the event
+        // cannot fake. A stale handoff is VOID, not late (F1, PRD 7.4-8).
+        guard isPlaying, player.rate == 0 else { return }
         isPlaying = false
-        await snapToReportedFrame()
+        transportEpoch += 1
+        await snapToReportedFrame(epoch: transportEpoch)
     }
 
     /// The stop handoff: snap what the player reports to a frame ONCE, take
@@ -157,46 +202,77 @@ final class PlaybackController {
     /// while the previous frame is still displaying. The displayed frame's
     /// PTS is a boundary time, which is the input shape the adapter's snap
     /// was measured against (docs/m1-asset-timescale-probe.md).
-    private func snapToReportedFrame() async {
+    private func snapToReportedFrame(epoch: Int) async {
         guard let rate = projectRate, let output = videoOutput else { return }
 
-        let itemTime = player.currentTime()
-        var reported = itemTime
-        var timeSource = "currentTime (fallback — display PTS unavailable)"
+        // Poll briefly: with no renderer draining it, AVPlayerItemVideoOutput
+        // can be dormant at the moment of the stop and needs a beat to vend.
         var displayPTS = CMTime.invalid
-        if output.hasNewPixelBuffer(forItemTime: itemTime),
-           output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: &displayPTS) != nil,
-           displayPTS.isNumeric {
-            reported = displayPTS
-            timeSource = "display PTS \(displayPTS.value)/\(displayPTS.timescale)"
+        for _ in 0..<10 {
+            let itemTime = player.currentTime()
+            if output.hasNewPixelBuffer(forItemTime: itemTime),
+               output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: &displayPTS) != nil,
+               displayPTS.isNumeric {
+                break
+            }
+            displayPTS = .invalid
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            guard epoch == transportEpoch else { return }
         }
 
-        guard let snap = CMTimeAdapter.documentTime(snappingToFrameGrid: reported, projectRate: rate) else {
-            lastPauseReport = "snap failed: non-numeric time from player"
+        guard displayPTS.isNumeric else {
+            // No frame evidence. The wall clock is NOT a substitute: it sits
+            // mid-frame — after our own seeks, exactly ON the frame centre,
+            // where nearest-boundary snapping is ambiguous by definition
+            // (that fallback was a debug-assert crash found by the F1 test).
+            // Without evidence the last confirmed index stays authoritative
+            // (PRD 7.4-8); re-seek to it and say what happened.
+            lastPauseReport = "display PTS unavailable — kept frame \(playheadFrame)"
+            await seekToPlayhead(epoch: epoch)
             return
         }
+
+        guard let snap = CMTimeAdapter.documentTime(snappingToFrameGrid: displayPTS, projectRate: rate) else {
+            lastPauseReport = "snap failed: non-numeric display PTS"
+            return
+        }
+        // A resume that arrived while we were reading the player voids the
+        // handoff entirely — it must not finish with a seek (F2).
+        guard epoch == transportEpoch else { return }
         // Frame index via L1 only — never time.ticks / ticksPerFrame
         // (PRD §6.2: compiles, usually right, still wrong).
         playheadFrame = FrameMapping.frameIndex(at: snap.time, rate: rate)
         lastPauseReport = """
-        \(timeSource) → frame \(playheadFrame), residual \
+        display PTS \(displayPTS.value)/\(displayPTS.timescale) → frame \(playheadFrame), residual \
         \(snap.residualTickNumerator)/\(snap.residualTickDenominator) ticks\
         \(snap.exceedsQuarterFrameThreshold ? " — EXCEEDS 1/4 frame" : "")
         """
-        await seekToPlayhead()
+        await seekToPlayhead(epoch: epoch)
     }
 
     // MARK: - Helpers
 
-    private func seekToPlayhead() async {
+    private func seekToPlayhead(epoch: Int) async {
         guard let rate = projectRate else { return }
+        let target = CMTimeAdapter.cmTimeForSeek(toFrame: playheadFrame, projectRate: rate)
         // Zero tolerance both ways (PRD §5.6.1): the frame-centre target
         // plus a tolerance would reintroduce the neighbour-frame risk the
         // centre offset exists to remove.
-        await player.seek(
-            to: CMTimeAdapter.cmTimeForSeek(toFrame: playheadFrame, projectRate: rate),
-            toleranceBefore: .zero, toleranceAfter: .zero)
-        clockDisplay = "frame \(playheadFrame)"
+        //
+        // The seek RESULT cannot be discarded (F7): false means cancelled,
+        // and a cancelled seek leaves playheadFrame and the player
+        // disagreeing — the exact split principle 8 forbids. When our own
+        // newer transport op cancelled it, that op owns the position and we
+        // drop out via the epoch. Otherwise: one retry, then surface.
+        var finished = await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        guard epoch == transportEpoch else { return }
+        if !finished {
+            finished = await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard epoch == transportEpoch else { return }
+        }
+        clockDisplay = finished
+            ? "frame \(playheadFrame)"
+            : "frame \(playheadFrame) — seek cancelled, player position unconfirmed"
     }
 
     private func installClockObserverIfNeeded() {
