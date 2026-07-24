@@ -7,7 +7,7 @@ private func rt(_ value: Int64, _ timescale: Int32) throws -> RationalTime {
 }
 
 private func docTime(_ ticks: Int64) throws -> DocumentTime {
-    DocumentTime(try rt(ticks, 120_000))
+    DocumentTime(exactly: try rt(ticks, 120_000))!
 }
 
 /// A hand-written clip JSON at document timescale, parameterized on the
@@ -165,6 +165,6 @@ private func clipJSON(
 
     @Test func timelineEndIsDerived() throws {
         let clip = try fullClip()
-        #expect(try clip.timelineEnd() == DocumentTime(try rt(840_600, 120_000)))
+        #expect(try clip.timelineEnd() == DocumentTime(exactly: try rt(840_600, 120_000))!)
     }
 }

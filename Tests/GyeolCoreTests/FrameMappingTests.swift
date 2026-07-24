@@ -3,7 +3,7 @@ import Testing
 @testable import GyeolCore
 
 private func docTime(_ ticks: Int64) -> DocumentTime {
-    DocumentTime(try! RationalTime(value: ticks, timescale: 120_000))
+    DocumentTime(exactly: try! RationalTime(value: ticks, timescale: 120_000))!
 }
 
 @Suite struct FrameMappingTests {

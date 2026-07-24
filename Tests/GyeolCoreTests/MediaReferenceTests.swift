@@ -13,7 +13,7 @@ private func rt(_ value: Int64, _ timescale: Int32) throws -> RationalTime {
             relativePath: "media/원본/클립.mov",
             contentFingerprint: ContentFingerprint(value: Data([0x01, 0x02]), byteSize: 1_048_576),
             displayName: "클립.mov",
-            duration: DocumentTime(try rt(600_000, 120_000)))
+            duration: DocumentTime(exactly: try rt(600_000, 120_000))!)
     }
 
     @Test func byteIdentityRoundTripFullyPopulated() throws {
@@ -42,7 +42,7 @@ private func rt(_ value: Int64, _ timescale: Int32) throws -> RationalTime {
         let reference = MediaReference(
             relativePath: "media/a.mov",
             displayName: "a.mov",
-            duration: DocumentTime(try rt(120_000, 120_000)))
+            duration: DocumentTime(exactly: try rt(120_000, 120_000))!)
         let data1 = try encoder.encode(reference)
         // Synthesized Codable omits nil optionals entirely — no "null" noise.
         let json = try #require(String(data: data1, encoding: .utf8))

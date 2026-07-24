@@ -3,7 +3,7 @@ import Testing
 @testable import GyeolCore
 
 private func docTime(_ ticks: Int64) throws -> DocumentTime {
-    DocumentTime(try RationalTime(value: ticks, timescale: 120_000))
+    DocumentTime(exactly: try RationalTime(value: ticks, timescale: 120_000))!
 }
 
 private func uuid(_ string: String) -> UUID {
@@ -250,7 +250,7 @@ private enum Fixture {
     @Test func danglingMediaInitTraps() async {
         await #expect(processExitsWith: .failure) {
             func docTime(_ ticks: Int64) throws -> DocumentTime {
-                DocumentTime(try RationalTime(value: ticks, timescale: 120_000))
+                DocumentTime(exactly: try RationalTime(value: ticks, timescale: 120_000))!
             }
             let clip = Clip(
                 id: ClipID(),
@@ -323,8 +323,8 @@ private enum Fixture {
         await #expect(processExitsWith: .failure) {
             _ = SubtitleSegment(
                 id: SubtitleID(),
-                start: DocumentTime(try RationalTime(value: -1, timescale: 120_000)),
-                duration: DocumentTime(try RationalTime(value: 1, timescale: 120_000)),
+                start: DocumentTime(exactly: try RationalTime(value: -1, timescale: 120_000))!,
+                duration: DocumentTime(exactly: try RationalTime(value: 1, timescale: 120_000))!,
                 text: "x")
         }
     }
@@ -334,9 +334,9 @@ private enum Fixture {
             var segment = SubtitleSegment(
                 id: SubtitleID(),
                 start: .zero,
-                duration: DocumentTime(try RationalTime(value: 1, timescale: 120_000)),
+                duration: DocumentTime(exactly: try RationalTime(value: 1, timescale: 120_000))!,
                 text: "x")
-            segment.start = DocumentTime(try RationalTime(value: -1, timescale: 120_000))
+            segment.start = DocumentTime(exactly: try RationalTime(value: -1, timescale: 120_000))!
         }
     }
 
@@ -354,7 +354,7 @@ private enum Fixture {
     @Test func unsortedSubtitlesInitTraps() async {
         await #expect(processExitsWith: .failure) {
             func docTime(_ ticks: Int64) throws -> DocumentTime {
-                DocumentTime(try RationalTime(value: ticks, timescale: 120_000))
+                DocumentTime(exactly: try RationalTime(value: ticks, timescale: 120_000))!
             }
             let late = SubtitleSegment(
                 id: SubtitleID(), start: try docTime(24_000), duration: try docTime(1), text: "b")
@@ -370,7 +370,7 @@ private enum Fixture {
     @Test func unsortedMarkersAssignmentTraps() async {
         await #expect(processExitsWith: .failure) {
             func docTime(_ ticks: Int64) throws -> DocumentTime {
-                DocumentTime(try RationalTime(value: ticks, timescale: 120_000))
+                DocumentTime(exactly: try RationalTime(value: ticks, timescale: 120_000))!
             }
             var document = GyeolDocument.empty
             document.markers = [

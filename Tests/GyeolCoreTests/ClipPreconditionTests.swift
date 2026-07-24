@@ -12,12 +12,12 @@ import Testing
         Clip(
             id: ClipID(),
             timelineStart: .zero,
-            duration: DocumentTime(try RationalTime(value: 1, timescale: 120_000)),
+            duration: DocumentTime(exactly: try RationalTime(value: 1, timescale: 120_000))!,
             source: .generator(identifier: "spectrum.bar", parameters: .object([:])))
     }
 
     private static func negativeTime() throws -> DocumentTime {
-        DocumentTime(try RationalTime(value: -1, timescale: 120_000))
+        DocumentTime(exactly: try RationalTime(value: -1, timescale: 120_000))!
     }
 
     @Test func zeroDurationInitTraps() async {
@@ -42,7 +42,7 @@ import Testing
             _ = Clip(
                 id: ClipID(),
                 timelineStart: try Self.negativeTime(),
-                duration: DocumentTime(try RationalTime(value: 1, timescale: 120_000)),
+                duration: DocumentTime(exactly: try RationalTime(value: 1, timescale: 120_000))!,
                 source: .generator(identifier: "x", parameters: .object([:])))
         }
     }

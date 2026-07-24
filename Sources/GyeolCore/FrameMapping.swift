@@ -44,7 +44,7 @@ extension FrameRate {
 public enum FrameMapping {
     /// The frame displayed at `time`: floor(t/d).
     public static func frameIndex(at time: DocumentTime, rate: FrameRate) -> Int {
-        let t = ticks(of: time)
+        let t = time.ticks
         // Swift's `/` truncates toward zero; floor rounds toward negative
         // infinity. The two differ only for negative t — which cannot be
         // stored, but if one ever reaches here, truncation would fold
@@ -59,7 +59,7 @@ public enum FrameMapping {
         precondition(index >= 0, "frame index must be non-negative")
         let (ticks, overflow) = Int64(index).multipliedReportingOverflow(by: rate.ticksPerFrame)
         precondition(!overflow, "frame index \(index) overflows Int64 ticks")
-        return DocumentTime(RationalTime(unchecked: ticks, timescale: DocumentTime.timescale))
+        return DocumentTime(ticks: ticks)
     }
 
     /// The number of frames `duration` spans: ceil(t/d).
@@ -71,24 +71,12 @@ public enum FrameMapping {
     /// count is k (the boundary at k·d belongs to the frame after the
     /// duration ends).
     public static func frameCount(for duration: DocumentTime, rate: FrameRate) -> Int {
-        let t = ticks(of: duration)
+        let t = duration.ticks
         precondition(t >= 0, "duration must be non-negative")
         // Ceiling via quotient/remainder, not (t + d - 1) / d: the addition
         // overflows for t within d - 2 of Int64.max, which decodes as a
         // valid document duration. q + 1 cannot overflow because d ≥ 2000.
         let (quotient, remainder) = t.quotientAndRemainder(dividingBy: rate.ticksPerFrame)
         return Int(remainder == 0 ? quotient : quotient + 1)
-    }
-
-    /// Normalizes a DocumentTime to ticks at 120000. Stored document times
-    /// are already at 120000; an in-memory value at a foreign timescale is
-    /// converted exactly (existing `RationalTime` machinery, not new math).
-    /// A value that cannot be represented is in-memory misuse: trap.
-    private static func ticks(of time: DocumentTime) -> Int64 {
-        guard let converted = try? time.time.converted(to: DocumentTime.timescale) else {
-            preconditionFailure(
-                "time \(time.time) is not representable at document timescale \(DocumentTime.timescale)")
-        }
-        return converted.value
     }
 }

@@ -4,7 +4,7 @@ import Testing
 @testable import GyeolCore
 
 private func docTime(_ ticks: Int64) -> DocumentTime {
-    DocumentTime(try! RationalTime(value: ticks, timescale: 120_000))
+    DocumentTime(exactly: try! RationalTime(value: ticks, timescale: 120_000))!
 }
 
 /// |residualNum/residualDen| ≤ boundNum/boundDen, cross-multiplied exactly.
@@ -23,7 +23,7 @@ private func residualWithin(_ snap: CMTimeAdapter.SnappedTime, boundNum: Int64, 
             let boundary = FrameMapping.time(ofFrame: index, rate: rate)
             let ns = CMTimeConvertScale(
                 CMTimeAdapter.cmTime(exactly: boundary), timescale: 1_000_000_000, method: .default)
-            let snap = try #require(CMTimeAdapter.documentTime(snappingToFrameGrid: ns, rate: rate))
+            let snap = try #require(CMTimeAdapter.documentTime(snappingToFrameGrid: ns, projectRate: rate))
             #expect(snap.time == boundary)
             #expect(FrameMapping.frameIndex(at: snap.time, rate: rate) == index)
             #expect(residualWithin(snap, boundNum: 60_000, boundDen: 1_000_000_000))
@@ -41,7 +41,7 @@ private func residualWithin(_ snap: CMTimeAdapter.SnappedTime, boundNum: Int64, 
             let boundary = FrameMapping.time(ofFrame: index, rate: rate)
             let coarse = CMTimeConvertScale(
                 CMTimeAdapter.cmTime(exactly: boundary), timescale: 600, method: .default)
-            let snap = try #require(CMTimeAdapter.documentTime(snappingToFrameGrid: coarse, rate: rate))
+            let snap = try #require(CMTimeAdapter.documentTime(snappingToFrameGrid: coarse, projectRate: rate))
             #expect(snap.time == boundary)
             #expect(FrameMapping.frameIndex(at: snap.time, rate: rate) == index)
             #expect(residualWithin(snap, boundNum: 60_000, boundDen: 600))
@@ -59,7 +59,7 @@ private func residualWithin(_ snap: CMTimeAdapter.SnappedTime, boundNum: Int64, 
             let boundaryTicks = Int64(index) * d
             for offset in [Int64(-1), 1] {
                 let input = CMTime(value: boundaryTicks + offset, timescale: 120_000)
-                let snap = try #require(CMTimeAdapter.documentTime(snappingToFrameGrid: input, rate: rate))
+                let snap = try #require(CMTimeAdapter.documentTime(snappingToFrameGrid: input, projectRate: rate))
                 #expect(FrameMapping.frameIndex(at: snap.time, rate: rate) == index)
                 #expect(snap.time == docTime(boundaryTicks))
                 // The discarded tick is visible, signed: input − boundary,
@@ -71,26 +71,34 @@ private func residualWithin(_ snap: CMTimeAdapter.SnappedTime, boundNum: Int64, 
         }
     }
 
-    /// Test 4 — a source timescale too coarse to address frames
-    /// (T < 2 × rate): the residual must be REPORTED, not swallowed.
-    /// 1/50 s at 30 fps sits 1600 ticks (0.4 frame) from the nearest
-    /// boundary — beyond the 1/4-frame threshold.
-    @Test func residualBeyondQuarterFrameIsReportedNotSwallowed() throws {
-        let input = CMTime(value: 1, timescale: 50)  // 2400 ticks exact
+    /// Test 4a — residual exactly AT the 1/4-frame threshold: reported with
+    /// exact values, flag off (the threshold is strict), no trap. 1/40 s at
+    /// 30 fps is 3000 ticks — precisely 1000 ticks (= d/4) from boundary
+    /// 4000.
+    @Test func residualAtExactlyQuarterFrameIsReportedWithoutTrapping() throws {
+        let input = CMTime(value: 1, timescale: 40)
         let snap = try #require(CMTimeAdapter.documentTime(
-            snappingToFrameGrid: input, rate: .fps30,
-            assertOnThresholdExceeded: false))
-        // Nearest boundary of frame grid d=4000 is 4000 (frame 1).
+            snappingToFrameGrid: input, projectRate: .fps30))
         #expect(snap.time == docTime(4_000))
-        #expect(snap.exceedsQuarterFrameThreshold)
-        // residual = 2400 − 4000 = −1600 ticks, exact: −80000/50.
-        #expect(snap.residualTickNumerator == -80_000)
-        #expect(snap.residualTickDenominator == 50)
+        #expect(!snap.exceedsQuarterFrameThreshold)
+        // residual = 3000 − 4000 = −1000 ticks, exact: −40000/40.
+        #expect(snap.residualTickNumerator == -40_000)
+        #expect(snap.residualTickDenominator == 40)
+    }
+
+    /// Test 4b — beyond the threshold the debug assert is unconditional
+    /// (A-21 pattern: trap behavior verified by exit test, no production
+    /// opt-out parameter). 1/50 s at 30 fps is 0.4 frame from any boundary.
+    @Test func residualBeyondQuarterFrameTrapsInDebug() async {
+        await #expect(processExitsWith: .failure) {
+            _ = CMTimeAdapter.documentTime(
+                snappingToFrameGrid: CMTime(value: 1, timescale: 50), projectRate: .fps30)
+        }
     }
 
     @Test func nonNumericTimesReturnNilInsteadOfLying() {
         for time in [CMTime.invalid, .indefinite, .positiveInfinity, .negativeInfinity] {
-            #expect(CMTimeAdapter.documentTime(snappingToFrameGrid: time, rate: .fps30) == nil)
+            #expect(CMTimeAdapter.documentTime(snappingToFrameGrid: time, projectRate: .fps30) == nil)
         }
     }
 }
@@ -105,7 +113,7 @@ private func residualWithin(_ snap: CMTimeAdapter.SnappedTime, boundNum: Int64, 
     func seekTimeSurvivesRoundingDownToCoarseTimescales(rate: FrameRate) throws {
         for index in [0, 1, 2, 100, 1799, 107_892] {
             for coarseScale in [CMTimeScale(600), 1_000, 24_000, 1_000_000_000] {
-                let seek = CMTimeAdapter.cmTimeForSeek(toFrame: index, rate: rate)
+                let seek = CMTimeAdapter.cmTimeForSeek(toFrame: index, projectRate: rate)
                 let roundedDown = CMTimeConvertScale(
                     seek, timescale: coarseScale, method: .roundTowardNegativeInfinity)
                 // Where did the rounded-down target actually land on the
@@ -131,7 +139,7 @@ private func residualWithin(_ snap: CMTimeAdapter.SnappedTime, boundNum: Int64, 
 
     @Test func seekTimeIsTheFrameCenterExactly() {
         // N·d + d/2 at timescale 240000, exact even for odd d (5005).
-        let seek = CMTimeAdapter.cmTimeForSeek(toFrame: 1, rate: .fps23_976)
+        let seek = CMTimeAdapter.cmTimeForSeek(toFrame: 1, projectRate: .fps23_976)
         #expect(seek.value == 2 * 5_005 + 5_005)
         #expect(seek.timescale == 240_000)
     }

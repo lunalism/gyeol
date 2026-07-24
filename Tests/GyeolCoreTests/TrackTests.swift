@@ -3,7 +3,7 @@ import Testing
 @testable import GyeolCore
 
 private func docTime(_ ticks: Int64) throws -> DocumentTime {
-    DocumentTime(try RationalTime(value: ticks, timescale: 120_000))
+    DocumentTime(exactly: try RationalTime(value: ticks, timescale: 120_000))!
 }
 
 private func generatorClip(start: Int64, duration: Int64) throws -> Clip {
@@ -91,7 +91,7 @@ private func trackJSON(clips: [(start: Int64, duration: Int64)], kind: String = 
     @Test func unsortedClipsInitTraps() async {
         await #expect(processExitsWith: .failure) {
             func docTime(_ ticks: Int64) throws -> DocumentTime {
-                DocumentTime(try RationalTime(value: ticks, timescale: 120_000))
+                DocumentTime(exactly: try RationalTime(value: ticks, timescale: 120_000))!
             }
             let late = Clip(
                 id: ClipID(), timelineStart: try docTime(24_000), duration: try docTime(1),
@@ -106,7 +106,7 @@ private func trackJSON(clips: [(start: Int64, duration: Int64)], kind: String = 
     @Test func overlappingClipsAssignmentTraps() async {
         await #expect(processExitsWith: .failure) {
             func docTime(_ ticks: Int64) throws -> DocumentTime {
-                DocumentTime(try RationalTime(value: ticks, timescale: 120_000))
+                DocumentTime(exactly: try RationalTime(value: ticks, timescale: 120_000))!
             }
             func clip(start: Int64, duration: Int64) throws -> Clip {
                 Clip(id: ClipID(), timelineStart: try docTime(start), duration: try docTime(duration),

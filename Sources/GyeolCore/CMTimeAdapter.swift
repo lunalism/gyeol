@@ -42,23 +42,25 @@ public enum CMTimeAdapter {
         public let exceedsQuarterFrameThreshold: Bool
     }
 
-    /// Snaps `time` to the nearest frame boundary at `rate` and reports the
-    /// discarded distance. Returns nil for non-numeric CMTime (invalid,
-    /// indefinite, ±infinity — AVPlayer reports these transiently) and for
-    /// values whose boundary does not fit Int64 ticks.
+    /// Snaps `time` to the nearest frame boundary at `projectRate` and
+    /// reports the discarded distance. Returns nil for non-numeric CMTime
+    /// (invalid, indefinite, ±infinity — AVPlayer reports these
+    /// transiently) and for values whose boundary does not fit Int64 ticks.
     ///
-    /// `assertOnThresholdExceeded` exists so tests can exercise the
-    /// over-threshold path; production call sites keep the default and get
-    /// a debug-build assert while release builds continue with the flag set.
+    /// `projectRate`, not `rate`: the grid being snapped to is the PROJECT
+    /// timeline grid (playhead, scrubbing, frame stepping). In M1 the
+    /// project rate and the source media rate are the same value; from M2 a
+    /// 24fps clip can sit in a 30fps project and the two grids diverge.
+    /// Mixing them is exactly the S3 failure §4.1 describes — the label
+    /// exists so the wrong call site LOOKS wrong.
     public static func documentTime(
         snappingToFrameGrid time: CMTime,
-        rate: FrameRate,
-        assertOnThresholdExceeded: Bool = true
+        projectRate: FrameRate
     ) -> SnappedTime? {
         guard time.isNumeric, time.timescale > 0 else { return nil }
         let value = Int128(time.value)
         let scale = Int128(time.timescale)
-        let d = Int128(rate.ticksPerFrame)
+        let d = Int128(projectRate.ticksPerFrame)
 
         // exact ticks = value·120000/scale; frame N = round(exact/d), half
         // away from zero. All in Int128: value·120000 alone can overflow
@@ -75,16 +77,19 @@ public enum CMTimeAdapter {
         // |residual| > d/4 ⟺ 4·|num| > d·den (cross-multiplied, exact).
         let exceeds = 4 * Int128(residualNumerator).magnitude
             > (d * Int128(residualDenominator)).magnitude
-        if exceeds, assertOnThresholdExceeded {
+        if exceeds {
+            // Debug builds trap (verified by exit test, the A-21 pattern);
+            // release builds continue with the flag set for the caller.
             assertionFailure("""
                 time \(time.value)/\(time.timescale) is \
                 \(residualNumerator)/\(residualDenominator) ticks from the \
-                nearest \(rate.rawValue) fps frame boundary — more than 1/4 \
-                frame; the source timescale cannot address frames at this rate
+                nearest \(projectRate.rawValue) fps frame boundary — more \
+                than 1/4 frame; the source timescale cannot address frames \
+                at this rate
                 """)
         }
         return SnappedTime(
-            time: DocumentTime(RationalTime(unchecked: boundaryTicks, timescale: DocumentTime.timescale)),
+            time: DocumentTime(ticks: boundaryTicks),
             residualTickNumerator: residualNumerator,
             residualTickDenominator: residualDenominator,
             exceedsQuarterFrameThreshold: exceeds)
@@ -93,15 +98,9 @@ public enum CMTimeAdapter {
     // MARK: - Direction 2a: DocumentTime → CMTime, exact
 
     /// Lossless conversion for composition construction. No offset, no
-    /// rounding: document ticks become a CMTime at 120000 verbatim.
-    /// A DocumentTime not representable at 120000 is in-memory misuse and
-    /// traps, matching `FrameMapping`'s convention.
+    /// rounding, no conversion: the stored ticks ARE the 120000 value.
     public static func cmTime(exactly time: DocumentTime) -> CMTime {
-        guard let converted = try? time.time.converted(to: DocumentTime.timescale) else {
-            preconditionFailure(
-                "time \(time.time) is not representable at document timescale \(DocumentTime.timescale)")
-        }
-        return CMTime(value: converted.value, timescale: DocumentTime.timescale)
+        CMTime(value: time.ticks, timescale: DocumentTime.timescale)
     }
 
     // MARK: - Direction 2b: frame index → CMTime, seek target
@@ -120,9 +119,9 @@ public enum CMTimeAdapter {
     /// DocumentTime, so it can never leak into the document or into L1.
     /// Timescale 240000 (= 2 × 120000) makes N·d + d/2 exact even for odd d
     /// (23.976's 5005).
-    public static func cmTimeForSeek(toFrame index: Int, rate: FrameRate) -> CMTime {
+    public static func cmTimeForSeek(toFrame index: Int, projectRate: FrameRate) -> CMTime {
         precondition(index >= 0, "frame index must be non-negative")
-        let d = rate.ticksPerFrame
+        let d = projectRate.ticksPerFrame
         let (doubled, mulOverflow) = Int64(index).multipliedReportingOverflow(by: 2 * d)
         let (numerator, addOverflow) = doubled.addingReportingOverflow(d)
         precondition(!mulOverflow && !addOverflow, "frame index \(index) overflows Int64")

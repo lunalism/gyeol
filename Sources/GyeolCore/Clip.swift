@@ -86,7 +86,9 @@ public struct Clip: Hashable, Sendable {
     /// The one derived quantity: `timelineStart + duration`. Throws only on
     /// `Int64` overflow of the exact sum.
     public func timelineEnd() throws -> DocumentTime {
-        DocumentTime(try timelineStart.time.adding(duration.time))
+        let (sum, overflow) = timelineStart.ticks.addingReportingOverflow(duration.ticks)
+        guard !overflow else { throw RationalTimeError.overflow }
+        return DocumentTime(ticks: sum)
     }
 }
 
