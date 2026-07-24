@@ -9,7 +9,7 @@ import Observation
 /// CoreMedia surface in Core is `CMTimeAdapter`, D19).
 ///
 /// The playhead is a FRAME INDEX (PRD §7.4-8). It changes in exactly two
-/// ways: stepping (±1) and the single snap that happens at pause. During
+/// ways: stepping (±1) and the single snap that happens at stop. During
 /// playback AVPlayer owns the clock and everything it reports is
 /// display-only — none of it is written back into `playheadFrame`.
 @MainActor
@@ -35,9 +35,9 @@ final class PlaybackController {
     /// What the player's clock says while playing. Display-only; seconds as
     /// Double is acceptable here precisely because nothing consumes it.
     private(set) var clockDisplay = "—"
-    /// Diagnostics from the last pause handoff — the residual is surfaced,
+    /// Diagnostics from the last stop handoff — the residual is surfaced,
     /// never swallowed (PRD §7.4-6).
-    private(set) var lastPauseReport: String?
+    private(set) var lastStopReport: String?
 
     private var videoOutput: AVPlayerItemVideoOutput?
     private var timeObserver: Any?
@@ -62,7 +62,7 @@ final class PlaybackController {
         player.pause()
         isPlaying = false
         loadState = .loading
-        lastPauseReport = nil
+        lastStopReport = nil
         let asset = AVURLAsset(url: url)
         do {
             // Everything loads into locals; state is committed only after
@@ -93,7 +93,7 @@ final class PlaybackController {
             }
 
             let item = AVPlayerItem(asset: asset)
-            // The video output exists for the pause handoff: it is the only
+            // The video output exists for the stop handoff: it is the only
             // API that reports WHICH frame is displaying (a PTS — a
             // boundary time the adapter's snap is built for). currentTime()
             // is a wall clock and lands mid-frame.
@@ -227,13 +227,13 @@ final class PlaybackController {
             // (that fallback was a debug-assert crash found by the F1 test).
             // Without evidence the last confirmed index stays authoritative
             // (PRD 7.4-8); re-seek to it and say what happened.
-            lastPauseReport = "display PTS unavailable — kept frame \(playheadFrame)"
+            lastStopReport = "display PTS unavailable — kept frame \(playheadFrame)"
             await seekToPlayhead(epoch: epoch)
             return
         }
 
         guard let snap = CMTimeAdapter.documentTime(snappingToFrameGrid: displayPTS, projectRate: rate) else {
-            lastPauseReport = "snap failed: non-numeric display PTS"
+            lastStopReport = "snap failed: non-numeric display PTS"
             return
         }
         // A resume that arrived while we were reading the player voids the
@@ -242,7 +242,7 @@ final class PlaybackController {
         // Frame index via L1 only — never time.ticks / ticksPerFrame
         // (PRD §6.2: compiles, usually right, still wrong).
         playheadFrame = FrameMapping.frameIndex(at: snap.time, rate: rate)
-        lastPauseReport = """
+        lastStopReport = """
         display PTS \(displayPTS.value)/\(displayPTS.timescale) → frame \(playheadFrame), residual \
         \(snap.residualTickNumerator)/\(snap.residualTickDenominator) ticks\
         \(snap.exceedsQuarterFrameThreshold ? " — EXCEEDS 1/4 frame" : "")

@@ -80,12 +80,12 @@ private func makeClip(at url: URL, frames: Int) async throws {
         #expect(controller.player.rate != 0, "player was yanked out of playback")
         #expect(controller.playheadFrame == playheadBefore,
                 "stale handoff moved the playhead")
-        #expect(controller.lastPauseReport == nil, "stale handoff produced a report")
+        #expect(controller.lastStopReport == nil, "stale handoff produced a report")
 
         // Contrast: a REAL stop (rate actually 0) still hands off end to end.
         controller.player.pause()  // what the pause action does
         await controller.playbackDidStop()  // the genuinely-queued task
         #expect(!controller.isPlaying)
-        #expect(controller.lastPauseReport != nil)
+        #expect(controller.lastStopReport != nil)
     }
 }

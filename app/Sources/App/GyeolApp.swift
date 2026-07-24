@@ -68,7 +68,7 @@ struct ContentView: View {
                         .monospacedDigit()
                     Text(controller.clockDisplay).foregroundStyle(.secondary)
                 }
-                if let report = controller.lastPauseReport {
+                if let report = controller.lastStopReport {
                     Text(report)
                         .font(.caption)
                         .foregroundStyle(.secondary)
