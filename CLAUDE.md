@@ -29,6 +29,10 @@ Five steps, in this order:
 `Gyeol.app` exists (xcodegen, `project.yml`).
 GyeolCore stays free of NSDocument and FileWrapper, PRD 5.6.5.
 
+`app/Gyeol.xcodeproj` is generated, not committed.
+Run `xcodegen generate` in `app/` after cloning, and again whenever
+`project.yml` changes.
+
 ## Before writing code
 
 Read the PRD sections that govern the task.
