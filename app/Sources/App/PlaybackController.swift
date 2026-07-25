@@ -56,6 +56,10 @@ final class PlaybackController {
     nonisolated(unsafe) private var timeObserver: Any?
     nonisolated(unsafe) private var rateObservation: NSKeyValueObservation?
 
+    init() {
+        LifetimeProbe.attach(to: player, label: "AVPlayer")
+    }
+
     deinit {
         // Per-document controllers make this teardown load-bearing (F6):
         // every closed document would otherwise leave a periodic observer
@@ -65,6 +69,7 @@ final class PlaybackController {
             player.removeTimeObserver(timeObserver)
         }
         rateObservation?.invalidate()
+        LifetimeProbe.logDeinit("PlaybackController")
     }
 
     /// Transport generation counter. Every transport mutation — play, stop
@@ -357,4 +362,31 @@ final class PlaybackController {
             }
         }
     }
+}
+
+/// G5 ground truth (M2.1): two measurements disagreed — the headless
+/// lifetime table said the document survives close, the GUI memory graph
+/// said it does not. Deinit logging in the RUNNING APP is the arbiter, and
+/// it stays after the dispute is settled: silent deallocation is exactly
+/// how a disagreement like this goes unnoticed.
+final class LifetimeProbe {
+    private static let log = Logger(subsystem: "dev.gyeol.Gyeol", category: "Lifetime")
+    nonisolated(unsafe) private static var associationKey: UInt8 = 0
+    private let label: String
+    private init(_ label: String) { self.label = label }
+
+    /// For classes that offer no deinit of their own to join (AVPlayer):
+    /// the probe rides along as an associated object and logs when its
+    /// host actually frees.
+    static func attach(to object: AnyObject, label: String) {
+        objc_setAssociatedObject(
+            object, &associationKey, LifetimeProbe(label), .OBJC_ASSOCIATION_RETAIN)
+    }
+
+    static func logDeinit(_ label: String) {
+        log.notice("\(label, privacy: .public) deinit")
+        print("G5-app: \(label) deinit")
+    }
+
+    deinit { Self.logDeinit(label) }
 }

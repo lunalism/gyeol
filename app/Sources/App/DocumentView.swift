@@ -14,12 +14,14 @@ import SwiftUI
 /// open, edit, revert and undo all flow through the same tracked write —
 /// no `.id(revision)` manual refresh, no parallel view model to drift.
 ///
-/// `file` is deliberately STRONG (the G5 decision, revisited now that the
-/// per-document structure exists): the cycle document → windowController →
-/// window → hosting view → this view → document is broken by
-/// `NSDocument.close()`, which the G5 measurement verifies on every test
-/// run. A weak reference would put an optional unwrap on every read of the
-/// document for a lifetime problem the measurement already guards.
+/// `file` is deliberately STRONG (the G5 decision, upheld by the M2.1
+/// reconciliation round): the cycle document → windowController → window →
+/// hosting view → this view → document is broken by `NSDocument.close()` —
+/// verified in the RUNNING APP (`--g5-probe`: document, controller, and
+/// player all deinit right after close). The headless suite's residual
+/// "leak" is a harness artifact (see DocumentLifecycleMeasurement's
+/// header). A weak reference would put an optional unwrap on every read of
+/// the document for a lifetime problem the app does not have.
 struct DocumentView: View {
     let file: GyeolDocumentFile
     /// Owned by the document (see GyeolDocumentFile.playback); the view is

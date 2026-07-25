@@ -52,6 +52,10 @@ final class GyeolDocumentFile: NSDocument {
         super.close()
     }
 
+    deinit {
+        LifetimeProbe.logDeinit("GyeolDocumentFile")
+    }
+
     /// Mirrors the Info.plist registration so the type mapping also holds
     /// where no bundle plist exists (the headless test bundle).
     static let documentType = "dev.gyeol.project"
@@ -153,9 +157,15 @@ final class GyeolDocumentFile: NSDocument {
 
     /// Applies a healed bookmark (MediaResolver's output). Touches only the
     /// sidecar; the document body stays byte-identical on the next save.
+    ///
+    /// NO change-count bump, DELIBERATELY (§5.6.8, and the M2.1 dirty-on-open
+    /// bug): healing runs during open, and a change count here marked a
+    /// freshly opened document Edited, which triggered autosave, which
+    /// REWROTE THE FILE the user only asked to look at. The sidecar is a
+    /// cache — a healed entry rides along with the next genuine save, and
+    /// losing it costs one re-heal on the next open, never data.
     func storeBookmark(_ data: Data, for id: MediaID) {
         bookmarks[id] = data
-        updateChangeCount(.changeDone)
     }
 
     // MARK: - Sidecar codec

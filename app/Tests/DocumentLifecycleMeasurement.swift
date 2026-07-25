@@ -8,8 +8,20 @@ import Testing
 // G5 MEASUREMENT (not a fix): the document → windowController → window →
 // NSHostingController → DocumentView.file → document cycle relies on
 // NSDocument.close() breaking it. Open and close repeatedly and confirm
-// the document actually deallocates. If this fails, the cycle leaks and
-// the fix belongs with M2's per-document controller structure.
+// the document actually deallocates.
+//
+// VERDICT (M2.1 reconciliation round): the "leak" is a HARNESS ARTIFACT.
+// Ground truth is the running app — `Gyeol --g5-probe <package>` opens and
+// closes a real document and logs deinit: document, controller, and player
+// all freed immediately after close(). The GUI memory graph agrees (no
+// GyeolDocumentFile instance after close). Only THIS headless environment
+// keeps the trio alive, and it survives every harness correction tried:
+// scope isolation (creation+close in a function returning weak refs),
+// autoreleasepool, and NSDocumentController registration. Two diagnosis
+// rounds were spent treating this as an app defect; it is not one. The
+// suite stays as a record and as the instrument that measured the
+// DIFFERENCE between environments — its failures must never again be read
+// as app leaks without an app-probe cross-check.
 
 @Suite @MainActor struct DocumentLifecycleMeasurement {
     /// Isolation stage 1: no window at all. If this leaks, the @Observable
@@ -132,54 +144,78 @@ import Testing
         }
     }
 
-    /// Task 1+2: WHAT survives (not why), and does it EVENTUALLY go away?
-    /// One weak probe per object of interest, sampled right after close,
-    /// after 0.5 s, and after 3 s of run-loop draining — AVFoundation tears
-    /// players down asynchronously, and an object alive at t=0 is not yet
-    /// a leak.
-    @Test func lifetimeTableAfterClose() throws {
-        weak var wFile: GyeolDocumentFile?
-        weak var wPlayback: PlaybackController?
-        weak var wPlayer: AVPlayer?
-        weak var wItem: AVPlayerItem?
-        weak var wWindow: NSWindow?
-        weak var wWindowController: NSWindowController?
-        weak var wHosting: NSViewController?
+    private struct LifetimeProbes {
+        weak var file: GyeolDocumentFile?
+        weak var playback: PlaybackController?
+        weak var player: AVPlayer?
+        weak var item: AVPlayerItem?
+        weak var window: NSWindow?
+        weak var windowController: NSWindowController?
+        weak var hosting: NSViewController?
+    }
 
+    /// Task 3 (harness audit): creation, settling, and close are confined
+    /// to THIS function, which returns only weak references — debug builds
+    /// keep strong locals alive to end of scope, so the measuring scope
+    /// must never be the scope that owned the document. The
+    /// `viaDocumentController` leg reproduces how the app actually obtains
+    /// a document (registered with NSDocumentController; close() also
+    /// deregisters), which the direct leg does not.
+    private func openSettleClose(viaDocumentController: Bool) -> LifetimeProbes {
+        // The pool matters as much as the scope: without it, autoreleased
+        // AppKit references pin the window chain in the runner's outer pool
+        // (measured — window/hosting flipped to ALIVE when the pool was
+        // dropped from this harness).
         autoreleasepool {
             let file = GyeolDocumentFile()
             file.replaceDocument(.empty)
+            if viaDocumentController {
+                NSDocumentController.shared.addDocument(file)
+            }
             file.makeWindowControllers()
             // Let the view's task run so the composition load wires the
-            // machinery — the known leaking configuration.
+            // machinery — the configuration that measured as leaking.
             for _ in 0..<25 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
-            wFile = file
-            wPlayback = file.playback
-            wPlayer = file.playback.player
-            wItem = file.playback.player.currentItem
-            wWindowController = file.windowControllers.first
-            wWindow = wWindowController?.window
-            wHosting = wWindow?.contentViewController
+            var probes = LifetimeProbes()
+            probes.file = file
+            probes.playback = file.playback
+            probes.player = file.playback.player
+            probes.item = file.playback.player.currentItem
+            probes.windowController = file.windowControllers.first
+            probes.window = probes.windowController?.window
+            probes.hosting = probes.window?.contentViewController
             file.close()
+            return probes
         }
+    }
 
-        func table(_ label: String) {
-            print("""
-            G5-table \(label): document=\(wFile != nil ? "ALIVE" : "freed") \
-            playback=\(wPlayback != nil ? "ALIVE" : "freed") \
-            player=\(wPlayer != nil ? "ALIVE" : "freed") \
-            item=\(wItem != nil ? "ALIVE" : "freed") \
-            window=\(wWindow != nil ? "ALIVE" : "freed") \
-            windowController=\(wWindowController != nil ? "ALIVE" : "freed") \
-            hosting=\(wHosting != nil ? "ALIVE" : "freed")
-            """)
+    /// WHAT survives (not why), and does it EVENTUALLY go away? Sampled
+    /// right after close, after 0.5 s, and after 3 s of run-loop draining —
+    /// AVFoundation tears players down asynchronously, and an object alive
+    /// at t=0 is not yet a leak.
+    @Test func lifetimeTableAfterClose() throws {
+        for viaController in [false, true] {
+            let path = viaController ? "NSDocumentController" : "direct"
+            let probes = openSettleClose(viaDocumentController: viaController)
+
+            func table(_ label: String) {
+                print("""
+                G5-table [\(path)] \(label): document=\(probes.file != nil ? "ALIVE" : "freed") \
+                playback=\(probes.playback != nil ? "ALIVE" : "freed") \
+                player=\(probes.player != nil ? "ALIVE" : "freed") \
+                item=\(probes.item != nil ? "ALIVE" : "freed") \
+                window=\(probes.window != nil ? "ALIVE" : "freed") \
+                windowController=\(probes.windowController != nil ? "ALIVE" : "freed") \
+                hosting=\(probes.hosting != nil ? "ALIVE" : "freed")
+                """)
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            table("t≈0")
+            for _ in 0..<25 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+            table("t≈0.5s")
+            for _ in 0..<50 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+            table("t≈3s")
         }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        table("t≈0")
-        for _ in 0..<25 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
-        table("t≈0.5s")
-        for _ in 0..<50 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
-        table("t≈3s")
     }
 
     /// Ordering variant: let the view's task actually run BEFORE closing.
@@ -196,22 +232,11 @@ import Testing
             file.close()
         }
         for _ in 0..<25 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
-        // KNOWN ISSUE (M2.1, open): a document whose window ran a real
-        // composition load leaks after close(), regardless of ordering and
-        // despite full machinery teardown (shutdown at close: item nil,
-        // KVO invalidated, observer removed). ELIMINATED hypotheses:
-        // compositor-retains-document (structurally impossible — the
-        // GyeolPlayback module cannot name GyeolDocumentFile, and the
-        // DetachedLoad probe leaks with document VALUES only), view→file
-        // strong reference (observation-only probe deallocates), task
-        // capture (sleep-task probe deallocates), state writes
-        // (reportLoadFailure probe deallocates). Lifetime table (M2.1
-        // diagnosis round, stable at t≈3s): document/playback/player ALIVE;
-        // item/window/windowController/hosting FREED — a REAL leak, not
-        // deferred teardown, and the view→window→hosting chain is
-        // eliminated as the retainer. Root retainer needs Instruments
-        // (GUI). Recorded, not hidden.
-        withKnownIssue("M2.1 G5 regression: composition-loaded document leaks on close (compositor-retention hypothesis eliminated)") {
+        // KNOWN ISSUE (M2.1, RESOLVED as harness artifact — see the header
+        // comment): the running app frees the document at close; only this
+        // headless environment pins it. The expectation is kept so the
+        // artifact's disappearance (an SDK or harness change) gets noticed.
+        withKnownIssue("M2.1 G5 verdict: harness artifact — the running app frees document/controller/player at close (--g5-probe); only the headless environment pins the document") {
             #expect(weakFile == nil, "document leaked even when closed after settling")
         }
     }
@@ -243,8 +268,9 @@ import Testing
                 print("G5: window from round \(round) still alive after close()")
             }
         }
-        // KNOWN ISSUE (M2.1, open) — see settledThenClosedDocumentDeallocates.
-        withKnownIssue("M2.1 G5 regression: composition-loaded document leaks on close (compositor-retention hypothesis eliminated)") {
+        // KNOWN ISSUE (M2.1, RESOLVED as harness artifact) — see the header
+        // comment and settledThenClosedDocumentDeallocates.
+        withKnownIssue("M2.1 G5 verdict: harness artifact — the running app frees document/controller/player at close (--g5-probe); only the headless environment pins the document") {
             #expect(leaked == 0, "\(leaked)/5 documents leaked after close()")
         }
     }
