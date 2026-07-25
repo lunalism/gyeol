@@ -134,6 +134,33 @@ private struct FixtureWorld {
         #expect(reopened.bookmarks.isEmpty)
     }
 
+    /// G7: the dialog-facing error for a corrupt body must carry GyeolCore's
+    /// field-and-reason diagnostic, not just "couldn't be read".
+    @Test func corruptBodySurfacesTheCoreDiagnostic() throws {
+        let world = try FixtureWorld()
+        try world.writePackage()
+        let bodyURL = world.packageURL.appendingPathComponent("document.json")
+        // A hand-edit that GyeolCore rejects with a precise reason: a
+        // fractional document time.
+        var json = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: bodyURL)) as! [String: Any]
+        json["markers"] = [["id": "EEEEEEEE-0000-4000-8000-000000000001",
+                            "label": "x", "time": 1.5]]
+        try JSONSerialization.data(withJSONObject: json).write(to: bodyURL)
+
+        do {
+            _ = try world.openPackage()
+            Issue.record("expected a throw")
+        } catch let error as CocoaError {
+            #expect(error.code == .fileReadCorruptFile)
+            let reason = error.userInfo[NSLocalizedFailureReasonErrorKey] as? String
+            #expect(reason?.contains("fractional") == true,
+                    "diagnostic lost: \(reason ?? "nil")")
+        } catch {
+            Issue.record("expected CocoaError, got \(error)")
+        }
+    }
+
     @Test func newerMajorRefusesToOpen() throws {
         let world = try FixtureWorld()
         try world.writePackage()

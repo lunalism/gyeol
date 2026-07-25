@@ -55,7 +55,12 @@ final class GyeolDocumentFile: NSDocument {
         // Version verdict BEFORE the full decode (PRD §5.6.3): a newer-major
         // file would fail decoding with a confusing field-level error;
         // the verdict names the actual problem.
-        let probe = try GyeolCoding.makeDecoder().decode(VersionProbe.self, from: body)
+        let probe: VersionProbe
+        do {
+            probe = try GyeolCoding.makeDecoder().decode(VersionProbe.self, from: body)
+        } catch {
+            throw Self.corruptDocumentError(wrapping: error)
+        }
         switch SchemaVersion.current.compatibility(ofFileVersion: probe.schemaVersion) {
         case .compatible:
             openedWithNewerMinor = false
@@ -77,7 +82,11 @@ final class GyeolDocumentFile: NSDocument {
             ])
         }
 
-        document = try GyeolCoding.makeDecoder().decode(GyeolDocument.self, from: body)
+        do {
+            document = try GyeolCoding.makeDecoder().decode(GyeolDocument.self, from: body)
+        } catch {
+            throw Self.corruptDocumentError(wrapping: error)
+        }
 
         // Sidecar: cache semantics. Missing, unreadable, or malformed all
         // mean the same thing — no bookmarks — and none of them is an error
@@ -135,5 +144,29 @@ final class GyeolDocumentFile: NSDocument {
 
     private struct VersionProbe: Decodable {
         let schemaVersion: SchemaVersion
+    }
+
+    /// G7 (principle 6): a DecodingError's dialog text is the generic
+    /// "couldn't be read" — the field-and-reason diagnostic GyeolCore builds
+    /// (which field, why it was rejected) never reaches the person editing
+    /// the file by hand. Wrap it so the dialog's failure reason carries it.
+    private static func corruptDocumentError(wrapping error: any Error) -> any Error {
+        guard let decodingError = error as? DecodingError else { return error }
+        let context: DecodingError.Context
+        switch decodingError {
+        case .dataCorrupted(let c), .keyNotFound(_, let c),
+             .typeMismatch(_, let c), .valueNotFound(_, let c):
+            context = c
+        @unknown default:
+            return error
+        }
+        let path = context.codingPath.map(\.stringValue).joined(separator: ".")
+        let reason = path.isEmpty
+            ? context.debugDescription
+            : "\(path): \(context.debugDescription)"
+        return CocoaError(.fileReadCorruptFile, userInfo: [
+            NSLocalizedDescriptionKey: "\(bodyFilename) could not be read",
+            NSLocalizedFailureReasonErrorKey: reason,
+        ])
     }
 }
