@@ -130,7 +130,7 @@ for spec in specs {
                 check(false, "frame \(target): display PTS \(pts.value)/\(pts.timescale) did not snap")
                 continue
             }
-            let shown = FrameMapping.frameIndex(at: snap.time, rate: spec.rate)
+            let shown = snap.frameIndex  // D23
             check(shown == target, "frame \(target): player shows frame \(shown) (PTS \(pts.value)/\(pts.timescale))")
             seekResults.append("\(target)→\(shown)")
         }
@@ -189,7 +189,7 @@ func handoffCheck(_ harness: PlayerHarness, rate: FrameRate, label: String) asyn
         check(false, "\(label): PTS \(pts.value)/\(pts.timescale) did not snap")
         return
     }
-    let confirmed = FrameMapping.frameIndex(at: snap.time, rate: rate)
+    let confirmed = snap.frameIndex  // D23
     check(snap.residualTickNumerator == 0, "\(label): residual \(snap.residualTickNumerator)/\(snap.residualTickDenominator) ≠ 0")
     // Re-seek from the confirmed index (the handoff's final step) and
     // confirm the displayed frame does not move.
@@ -198,7 +198,7 @@ func handoffCheck(_ harness: PlayerHarness, rate: FrameRate, label: String) asyn
         toleranceBefore: .zero, toleranceAfter: .zero)
     if let pts2 = await harness.currentDisplayPTS(),
        let snap2 = CMTimeAdapter.documentTime(snappingToFrameGrid: pts2, projectRate: rate) {
-        let after = FrameMapping.frameIndex(at: snap2.time, rate: rate)
+        let after = snap2.frameIndex  // D23
         check(after == confirmed, "\(label): reseek moved frame \(confirmed) → \(after)")
         print("  \(label): confirmed frame \(confirmed), residual 0, reseek stable")
     } else {

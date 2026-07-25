@@ -261,14 +261,10 @@ final class PlaybackController {
         // A resume that arrived while we were reading the player voids the
         // handoff entirely — it must not finish with a seek (F2).
         guard epoch == transportEpoch else { return }
-        // Frame index via L1 only — never time.ticks / ticksPerFrame
-        // (PRD §6.2: compiles, usually right, still wrong).
-        playheadFrame = FrameMapping.frameIndex(at: snap.time, rate: rate)
-        lastStopReport = """
-        display PTS \(displayPTS.value)/\(displayPTS.timescale) → frame \(playheadFrame), residual \
-        \(snap.residualTickNumerator)/\(snap.residualTickDenominator) ticks\
-        \(snap.exceedsQuarterFrameThreshold ? " — EXCEEDS 1/4 frame" : "")
-        """
+        // The adapter carries the L1 frame index (D23) — no second mapping,
+        // no pull toward ticks / ticksPerFrame (PRD §6.2).
+        playheadFrame = snap.frameIndex
+        lastStopReport = "display PTS \(displayPTS.value)/\(displayPTS.timescale) → \(snap)"
         await seekToPlayhead(epoch: epoch)
     }
 

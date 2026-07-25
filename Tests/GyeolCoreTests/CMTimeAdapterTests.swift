@@ -96,6 +96,29 @@ private func residualWithin(_ snap: CMTimeAdapter.SnappedTime, boundNum: Int64, 
         }
     }
 
+    /// D23: the carried frame index must be exactly what L1 says about the
+    /// snapped time — one mapping, even when the adapter could shortcut it.
+    @Test(arguments: FrameRate.allCases)
+    func carriedFrameIndexMatchesL1(rate: FrameRate) throws {
+        for index in [0, 1, 100, 107_892] {
+            let boundary = FrameMapping.time(ofFrame: index, rate: rate)
+            let ns = CMTimeConvertScale(
+                CMTimeAdapter.cmTime(exactly: boundary), timescale: 1_000_000_000, method: .default)
+            let snap = try #require(CMTimeAdapter.documentTime(snappingToFrameGrid: ns, projectRate: rate))
+            #expect(snap.frameIndex == index)
+            #expect(snap.frameIndex == FrameMapping.frameIndex(at: snap.time, rate: rate))
+        }
+    }
+
+    @Test func descriptionCarriesResidualAndThresholdState() throws {
+        let snap = try #require(CMTimeAdapter.documentTime(
+            snappingToFrameGrid: CMTime(value: 1, timescale: 40), projectRate: .fps30))
+        #expect(snap.description == "frame 1, residual -40000/40 ticks")
+        let clean = try #require(CMTimeAdapter.documentTime(
+            snappingToFrameGrid: CMTime(value: 4_000, timescale: 120_000), projectRate: .fps30))
+        #expect(clean.description == "frame 1, residual 0/120000 ticks")
+    }
+
     @Test func nonNumericTimesReturnNilInsteadOfLying() {
         for time in [CMTime.invalid, .indefinite, .positiveInfinity, .negativeInfinity] {
             #expect(CMTimeAdapter.documentTime(snappingToFrameGrid: time, projectRate: .fps30) == nil)

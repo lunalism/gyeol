@@ -29,6 +29,11 @@ public enum CMTimeAdapter {
     public struct SnappedTime: Hashable, Sendable {
         /// Exactly N·d ticks at 120000 — safe to hand to `FrameMapping`.
         public let time: DocumentTime
+        /// The N of that boundary (D23). Computed by `FrameMapping` on the
+        /// snapped time — the ONE mapping (§4.1) — and carried here so
+        /// consumers never feel the pull toward `ticks / ticksPerFrame`
+        /// that §6.2 forbids.
+        public let frameIndex: Int
         /// What snapping discarded: (incoming time − chosen boundary), as an
         /// exact fraction of one 120000 tick: `residualTickNumerator /
         /// residualTickDenominator` ticks. The denominator is the incoming
@@ -41,7 +46,18 @@ public enum CMTimeAdapter {
         /// a signal to surface, not a crash.
         public let exceedsQuarterFrameThreshold: Bool
     }
+}
 
+/// The log-friendly form callers were assembling by hand at every site
+/// (M1.2 friction). A description, not a formatting layer.
+extension CMTimeAdapter.SnappedTime: CustomStringConvertible {
+    public var description: String {
+        "frame \(frameIndex), residual \(residualTickNumerator)/\(residualTickDenominator) ticks"
+            + (exceedsQuarterFrameThreshold ? " — EXCEEDS 1/4 frame" : "")
+    }
+}
+
+extension CMTimeAdapter {
     /// Snaps `time` to the nearest frame boundary at `projectRate` and
     /// reports the discarded distance. Returns nil for non-numeric CMTime
     /// (invalid, indefinite, ±infinity — AVPlayer reports these
@@ -88,8 +104,12 @@ public enum CMTimeAdapter {
                 at this rate
                 """)
         }
+        let snappedTime = DocumentTime(ticks: boundaryTicks)
         return SnappedTime(
-            time: DocumentTime(ticks: boundaryTicks),
+            time: snappedTime,
+            // Through L1, not from our internal quotient: the mapping stays
+            // singular even inside the adapter that could shortcut it.
+            frameIndex: FrameMapping.frameIndex(at: snappedTime, rate: projectRate),
             residualTickNumerator: residualNumerator,
             residualTickDenominator: residualDenominator,
             exceedsQuarterFrameThreshold: exceeds)
