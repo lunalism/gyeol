@@ -8,6 +8,20 @@ struct GyeolApp: App {
         WindowGroup {
             ContentView()
         }
+        .commands {
+            // Document lifecycle goes through NSDocumentController (M1.3's
+            // adapter); the SwiftUI window above stays the media preview.
+            CommandGroup(after: .newItem) {
+                Button("새 프로젝트") {
+                    NSDocumentController.shared.newDocument(nil)
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("프로젝트 열기…") {
+                    NSDocumentController.shared.openDocument(nil)
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
+        }
     }
 }
 

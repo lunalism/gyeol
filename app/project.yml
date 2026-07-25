@@ -28,8 +28,25 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.gyeol.Gyeol
-        GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
+    # Document type registration (M1 finalization): .gyeol is a package
+    # UTI owned by us; NSDocumentClass wires NSDocumentController to the
+    # M1.3 adapter.
+    info:
+      path: GeneratedInfo.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Gyeol Project
+            CFBundleTypeRole: Editor
+            LSItemContentTypes: [dev.gyeol.project]
+            LSTypeIsPackage: true
+            NSDocumentClass: Gyeol.GyeolDocumentFile
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: dev.gyeol.project
+            UTTypeDescription: Gyeol Project
+            UTTypeConformsTo: [com.apple.package]
+            UTTypeTagSpecification:
+              public.filename-extension: [gyeol]
     scheme:
       testTargets: [GyeolAppTests]
   # Standalone test bundle (no TEST_HOST): the files under test are compiled
@@ -42,6 +59,7 @@ targets:
       - path: Sources/App/GyeolDocumentFile.swift
       - path: Sources/App/MediaResolver.swift
       - path: Sources/App/PlaybackController.swift
+      - path: Sources/App/DocumentView.swift
     dependencies:
       - package: GyeolCore
         product: GyeolCore

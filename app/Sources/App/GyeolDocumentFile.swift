@@ -1,5 +1,6 @@
 import AppKit
 import GyeolCore
+import SwiftUI
 import UniformTypeIdentifiers
 
 /// The `.gyeol` package adapter. GyeolCore ends at `Document ↔ Data`
@@ -28,6 +29,27 @@ final class GyeolDocumentFile: NSDocument {
     private(set) var openedWithNewerMinor = false
 
     override class var autosavesInPlace: Bool { true }
+
+    /// Mirrors the Info.plist registration so the type mapping also holds
+    /// where no bundle plist exists (the headless test bundle).
+    static let documentType = "dev.gyeol.project"
+
+    override class var readableTypes: [String] { [documentType] }
+    override class var writableTypes: [String] { [documentType] }
+
+    override func fileNameExtension(
+        forType typeName: String, saveOperation: NSDocument.SaveOperationType
+    ) -> String? {
+        "gyeol"
+    }
+
+    override func makeWindowControllers() {
+        let window = NSWindow(contentViewController: NSHostingController(
+            rootView: DocumentView(file: self)))
+        window.setContentSize(NSSize(width: 480, height: 340))
+        window.title = displayName
+        addWindowController(NSWindowController(window: window))
+    }
 
     // MARK: - Write
 
