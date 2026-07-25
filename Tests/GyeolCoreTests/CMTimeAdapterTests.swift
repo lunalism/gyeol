@@ -86,14 +86,18 @@ private func residualWithin(_ snap: CMTimeAdapter.SnappedTime, boundNum: Int64, 
         #expect(snap.residualTickDenominator == 40)
     }
 
-    /// Test 4b — beyond the threshold the debug assert is unconditional
-    /// (A-21 pattern: trap behavior verified by exit test, no production
-    /// opt-out parameter). 1/50 s at 30 fps is 0.4 frame from any boundary.
-    @Test func residualBeyondQuarterFrameTrapsInDebug() async {
-        await #expect(processExitsWith: .failure) {
-            _ = CMTimeAdapter.documentTime(
-                snappingToFrameGrid: CMTime(value: 1, timescale: 50), projectRate: .fps30)
-        }
+    /// Test 4b — beyond the threshold the FLAG is set and the values stay
+    /// exact; no trap. The assert that used to live here fired on external
+    /// runtime data (AVFoundation echoing a seek target as a display PTS
+    /// under decoder failure — measured in M2.1), so exceeding is a signal
+    /// the caller owns, never a crash (§7.4-6).
+    @Test func residualBeyondQuarterFrameSetsTheFlagWithExactValues() throws {
+        let snap = try #require(CMTimeAdapter.documentTime(
+            snappingToFrameGrid: CMTime(value: 1, timescale: 50), projectRate: .fps30))
+        #expect(snap.exceedsQuarterFrameThreshold)
+        #expect(snap.time == docTime(4_000))
+        #expect(snap.residualTickNumerator == -80_000)
+        #expect(snap.residualTickDenominator == 50)
     }
 
     /// D23: the carried frame index must be exactly what L1 says about the

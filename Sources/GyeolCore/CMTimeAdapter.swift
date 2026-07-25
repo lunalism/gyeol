@@ -91,19 +91,16 @@ extension CMTimeAdapter {
         let residualDenominator = Int64(scale)
 
         // |residual| > d/4 ⟺ 4·|num| > d·den (cross-multiplied, exact).
+        //
+        // No assert on exceeding, DELIBERATELY (M2.1 finding): this input
+        // is external runtime data, not programmer error. Measured — under
+        // decoder failure AVPlayerItemVideoOutput echoes the SEEK TARGET
+        // (a frame centre, mid-frame by construction) as the display
+        // timestamp, and a debug assert here killed the process on data no
+        // code path controls. §7.4-6: the threshold is a SIGNAL the caller
+        // owns; the flag below carries it.
         let exceeds = 4 * Int128(residualNumerator).magnitude
             > (d * Int128(residualDenominator)).magnitude
-        if exceeds {
-            // Debug builds trap (verified by exit test, the A-21 pattern);
-            // release builds continue with the flag set for the caller.
-            assertionFailure("""
-                time \(time.value)/\(time.timescale) is \
-                \(residualNumerator)/\(residualDenominator) ticks from the \
-                nearest \(projectRate.rawValue) fps frame boundary — more \
-                than 1/4 frame; the source timescale cannot address frames \
-                at this rate
-                """)
-        }
         let snappedTime = DocumentTime(ticks: boundaryTicks)
         return SnappedTime(
             time: snappedTime,

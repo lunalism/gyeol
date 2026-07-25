@@ -16,6 +16,14 @@ import UniformTypeIdentifiers
 /// The sidecar is a CACHE (PRD §5.6.8). Its one invariant: the project works
 /// correctly when it is gone entirely. Reading tolerates a missing or
 /// corrupt sidecar by treating it as empty — never by failing the open.
+///
+/// @Observable on an NSDocument subclass (G2): NSDocument predates
+/// Observation, and the alternative — a parallel view model mirroring the
+/// value-type document — is a second copy that can drift. The macro makes
+/// `document` itself the tracked state; every mutation path already funnels
+/// through the tracked property (`replaceDocument`, `read`), so SwiftUI
+/// sees open, edit, revert and undo through one write site.
+@Observable
 final class GyeolDocumentFile: NSDocument {
     static let bodyFilename = "document.json"
     static let sidecarFilename = "bookmarks.plist"
@@ -29,6 +37,20 @@ final class GyeolDocumentFile: NSDocument {
     private(set) var openedWithNewerMinor = false
 
     override class var autosavesInPlace: Bool { true }
+
+    /// The per-document playback controller (G4), owned by the DOCUMENT,
+    /// not the view. Measured (G5): every view-side teardown hook loses a
+    /// race somewhere — `.onDisappear` never fires for a window closed
+    /// before its content appeared, and a hook registered from the view's
+    /// task arrives after `close()`. The document's `close()` is the one
+    /// boundary every path crosses, and ownership is what guarantees the
+    /// hook exists before close can happen.
+    @ObservationIgnored private(set) lazy var playback = PlaybackController()
+
+    override func close() {
+        playback.shutdown()
+        super.close()
+    }
 
     /// Mirrors the Info.plist registration so the type mapping also holds
     /// where no bundle plist exists (the headless test bundle).
@@ -45,7 +67,7 @@ final class GyeolDocumentFile: NSDocument {
 
     override func makeWindowControllers() {
         let window = NSWindow(contentViewController: NSHostingController(
-            rootView: DocumentView(file: self)))
+            rootView: DocumentView(file: self, playback: playback)))
         window.setContentSize(NSSize(width: 480, height: 340))
         window.title = displayName
         addWindowController(NSWindowController(window: window))

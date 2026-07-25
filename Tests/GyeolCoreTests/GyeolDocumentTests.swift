@@ -85,6 +85,9 @@ private enum Fixture {
                 ]),
                 Track(id: trackIDs[3], kind: .audio, clips: [], isMuted: true),
             ],
+            // Deliberate trailing space beyond the last clip end (360000):
+            // the playable domain is the stored duration, not the content.
+            duration: try docTime(480_000),
             subtitles: [
                 SubtitleSegment(id: subtitleIDs[0], start: try docTime(0),
                                 duration: try docTime(240_000), text: "첫 자막"),
@@ -169,6 +172,41 @@ private enum Fixture {
 }
 
 @Suite struct GyeolDocumentValidationTests {
+    /// Files written before the duration field existed keep their meaning:
+    /// absent duration derives to the last clip end.
+    @Test func absentDurationDerivesToLastClipEnd() throws {
+        let json = try Fixture.mutatedJSON { object in
+            object.removeValue(forKey: "duration")
+        }
+        let decoded = try GyeolCoding.makeDecoder().decode(GyeolDocument.self, from: json)
+        #expect(decoded.duration.ticks == 360_000)
+    }
+
+    @Test func durationBelowAClipEndThrows() throws {
+        let json = try Fixture.mutatedJSON { object in
+            object["duration"] = 100
+        }
+        #expect(throws: (any Error).self) {
+            try GyeolCoding.makeDecoder().decode(GyeolDocument.self, from: json)
+        }
+    }
+
+    @Test func durationBelowAClipEndTrapsAtInit() async {
+        await #expect(processExitsWith: .failure) {
+            func docTime(_ ticks: Int64) throws -> DocumentTime {
+                DocumentTime(exactly: try RationalTime(value: ticks, timescale: 120_000))!
+            }
+            let clip = Clip(
+                id: ClipID(), timelineStart: .zero, duration: try docTime(240_000),
+                source: .generator(identifier: "x", parameters: .object([:])))
+            _ = GyeolDocument(
+                schemaVersion: .current,
+                settings: ProjectSettings(frameRate: .fps30, renderWidth: 1920, renderHeight: 1080),
+                tracks: [Track(id: TrackID(), kind: .video, clips: [clip])],
+                duration: try docTime(120_000))
+        }
+    }
+
     @Test func unsortedSubtitlesThrow() throws {
         let json = try Fixture.mutatedJSON { object in
             object["subtitles"] = Array((object["subtitles"] as! [Any]).reversed())

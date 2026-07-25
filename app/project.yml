@@ -10,6 +10,8 @@ options:
 packages:
   GyeolCore:
     path: ../
+  Playback:
+    path: Playback
   argmax-oss-swift:
     url: https://github.com/argmaxinc/argmax-oss-swift
     exactVersion: 1.0.0
@@ -25,6 +27,8 @@ targets:
         product: GyeolCore
       - package: argmax-oss-swift
         product: WhisperKit
+      - package: Playback
+        product: GyeolPlayback
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.gyeol.Gyeol
@@ -38,11 +42,11 @@ targets:
         CFBundleDocumentTypes:
           - CFBundleTypeName: Gyeol Project
             CFBundleTypeRole: Editor
-            LSItemContentTypes: [dev.gyeol.project]
+            LSItemContentTypes: [&gyeolUTI dev.gyeol.project]  # D25: single YAML anchor
             LSTypeIsPackage: true
             NSDocumentClass: Gyeol.GyeolDocumentFile
         UTExportedTypeDeclarations:
-          - UTTypeIdentifier: dev.gyeol.project
+          - UTTypeIdentifier: *gyeolUTI
             UTTypeDescription: Gyeol Project
             UTTypeConformsTo: [com.apple.package]
             UTTypeTagSpecification:
@@ -60,9 +64,12 @@ targets:
       - path: Sources/App/MediaResolver.swift
       - path: Sources/App/PlaybackController.swift
       - path: Sources/App/DocumentView.swift
+      - path: Sources/App/PlayerLayerView.swift
     dependencies:
       - package: GyeolCore
         product: GyeolCore
+      - package: Playback
+        product: GyeolPlayback
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.gyeol.GyeolAppTests

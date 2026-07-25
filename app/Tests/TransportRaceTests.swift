@@ -61,8 +61,25 @@ private func makeClip(at url: URL, frames: Int) async throws {
         let url = dir.appendingPathComponent("clip.mov")
         try await makeClip(at: url, frames: 120)  // 4 s at 30 fps
 
+        // In-code document (no package needed): one 30fps clip, URLs
+        // supplied directly — load() is the same epoch-guarded rebuild path
+        // the document window uses.
+        let mediaID = MediaID()
+        let document = GyeolDocument(
+            schemaVersion: .current,
+            settings: ProjectSettings(frameRate: .fps30, renderWidth: 320, renderHeight: 180),
+            media: [mediaID: MediaReference(
+                relativePath: "clip.mov", displayName: "clip.mov",
+                duration: DocumentTime(exactly: try! RationalTime(value: 480_000, timescale: 120_000))!)],
+            tracks: [Track(id: TrackID(), kind: .video, clips: [
+                Clip(id: ClipID(),
+                     timelineStart: .zero,
+                     duration: DocumentTime(exactly: try! RationalTime(value: 480_000, timescale: 120_000))!,
+                     source: .media(MediaSource(mediaID: mediaID, sourceStart: .zero))),
+            ])])
+
         let controller = PlaybackController()
-        await controller.open(url: url)
+        await controller.load(document: document, mediaURLs: [mediaID: url])
         #expect(controller.loadState == .ready)
 
         // THE interleaving: pause queued a handoff, play resumed before it

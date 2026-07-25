@@ -91,11 +91,32 @@ public struct GyeolDocument: Hashable, Sendable {
         }
     }
 
+    /// The timeline's length — and therefore the playable domain of
+    /// playback AND export (M2.1 decision, report target for the PRD).
+    ///
+    /// The PRD referenced a document `duration` (§4.1 L3, D20) without ever
+    /// declaring it in the schema; the playable domain was silently "the
+    /// last clip's end", which makes deliberate trailing space after the
+    /// last clip vanish — a §7.4-6 violation. It is now document data:
+    /// trailing empty region renders per the empty-region rule.
+    ///
+    /// Guards: non-negative here (didSet); the CROSS-FIELD invariant —
+    /// `duration` ≥ every clip's end — is decode-throw + init-precondition
+    /// only, like the dangling-media check: a didSet cannot order
+    /// multi-step edits (§5.6.7), so the M2 editing transaction owns it on
+    /// mutation. Decoding a document without the field (written before it
+    /// existed) derives it from the last clip end — exactly the old
+    /// behavior, so no existing file changes meaning.
+    public var duration: DocumentTime {
+        didSet { precondition(duration.time >= .zero, "duration must be non-negative") }
+    }
+
     public init(
         schemaVersion: SchemaVersion,
         settings: ProjectSettings,
         media: [MediaID: MediaReference] = [:],
         tracks: [Track] = [],
+        duration: DocumentTime? = nil,
         subtitles: [SubtitleSegment] = [],
         subtitleStyle: SubtitleStyle = .default,
         markers: [Marker] = []
@@ -115,10 +136,15 @@ public struct GyeolDocument: Hashable, Sendable {
                 }
             }
         }
+        let resolvedDuration = duration ?? Self.derivedDuration(of: tracks)
+        if let violation = Self.durationViolation(resolvedDuration, tracks: tracks) {
+            preconditionFailure(violation)
+        }
         self.schemaVersion = schemaVersion
         self.settings = settings
         self.media = media
         self.tracks = tracks
+        self.duration = resolvedDuration
         self.subtitles = subtitles
         self.subtitleStyle = subtitleStyle
         self.markers = markers
@@ -129,6 +155,40 @@ public struct GyeolDocument: Hashable, Sendable {
     public static let empty = GyeolDocument(
         schemaVersion: .current,
         settings: ProjectSettings(frameRate: .fps30, renderWidth: 1920, renderHeight: 1080))
+
+    /// The last clip's end across all tracks — the pre-field playable
+    /// domain, used as the default when `duration` is absent.
+    static func derivedDuration(of tracks: [Track]) -> DocumentTime {
+        var maxEndTicks: Int64 = 0
+        for track in tracks {
+            for clip in track.clips {
+                if let end = try? clip.timelineEnd() {
+                    maxEndTicks = max(maxEndTicks, end.ticks)
+                }
+            }
+        }
+        return DocumentTime(ticks: maxEndTicks)
+    }
+
+    static func durationViolation(_ duration: DocumentTime, tracks: [Track]) -> String? {
+        guard duration.time >= .zero else {
+            return "duration must be non-negative, got \(duration.time)"
+        }
+        for track in tracks {
+            for clip in track.clips {
+                guard let end = try? clip.timelineEnd() else {
+                    return "clip \(clip.id.rawValue.uuidString) end time overflows"
+                }
+                if end.ticks > duration.ticks {
+                    return """
+                    clip \(clip.id.rawValue.uuidString) ends at \(end.ticks) ticks, \
+                    beyond the document duration \(duration.ticks)
+                    """
+                }
+            }
+        }
+        return nil
+    }
 
     static func subtitleOrderingViolation(_ subtitles: [SubtitleSegment]) -> String? {
         for index in subtitles.indices.dropFirst()
@@ -151,7 +211,7 @@ public struct GyeolDocument: Hashable, Sendable {
 
 extension GyeolDocument: Codable {
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, settings, media, tracks, subtitles, subtitleStyle, markers
+        case schemaVersion, settings, media, tracks, duration, subtitles, subtitleStyle, markers
     }
 
     private struct MediaPoolKey: CodingKey {
@@ -219,6 +279,16 @@ extension GyeolDocument: Codable {
                 }
             }
         }
+
+        // Absent in files written before the field existed: derive the old
+        // playable domain (last clip end) so their meaning is unchanged.
+        let duration = try container.decodeIfPresent(DocumentTime.self, forKey: .duration)
+            ?? Self.derivedDuration(of: tracks)
+        if let violation = Self.durationViolation(duration, tracks: tracks) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .duration, in: container, debugDescription: violation)
+        }
+        self.duration = duration
 
         self.schemaVersion = try container.decode(SchemaVersion.self, forKey: .schemaVersion)
         self.settings = try container.decode(ProjectSettings.self, forKey: .settings)

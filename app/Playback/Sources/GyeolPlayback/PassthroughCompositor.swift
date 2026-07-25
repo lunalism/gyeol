@@ -17,6 +17,14 @@ import os
 /// bit-identical contract needs the compositor to define its IO format
 /// rather than inherit two.
 ///
+/// §7.4-4 STRUCTURAL GUARANTEE: the renderer receives document VALUES,
+/// never the document object. This module (GyeolPlayback) cannot even name
+/// `GyeolDocumentFile` — it depends only on GyeolCore — so neither the
+/// compositor AVFoundation instantiates from `customVideoCompositorClass`
+/// nor any instruction the builder emits can hold a reference to or a
+/// closure over the document. That makes the "compositor retains the
+/// document" leak hypothesis impossible by construction, not by care.
+///
 /// Generators (§5.8, step 5): the shape here leaves room for them. A
 /// custom instruction conforming to `AVVideoCompositionInstructionProtocol`
 /// can report empty `requiredSourceTrackIDs`; `startRequest` then renders
@@ -41,17 +49,54 @@ public final class PassthroughCompositor: NSObject, AVVideoCompositing {
 
     public func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
         let start = ContinuousClock.now
-        guard let trackID = request.sourceTrackIDs.first,
-              let frame = request.sourceFrame(byTrackID: trackID.int32Value) else {
-            request.finish(with: CompositorError.noSourceFrame)
+        // Sources arrive TOP-FIRST (the builder's layering contract:
+        // stacked by track index, alpha-composited at M4). Taking the
+        // first AVAILABLE source is the fully-opaque degenerate case of
+        // that stack — a missing source on a track is ABSENCE (empty-
+        // region rule 1), so the next track down shows through.
+        for trackID in request.sourceTrackIDs {
+            if let frame = request.sourceFrame(byTrackID: trackID.int32Value) {
+                request.finish(withComposedVideoFrame: frame)
+                Self.recordRequest(seconds: elapsedSeconds(since: start))
+                return
+            }
+        }
+        // NO track contributes: empty-region rule 2 — the final frame is
+        // opaque video-range black, deterministic bytes, L2-hashable.
+        // This branch is also where M4's generators plug in — they render
+        // from instruction parameters instead of filling black.
+        guard let buffer = request.renderContext.newPixelBuffer() else {
+            request.finish(with: CompositorError.noRenderBuffer)
             return
         }
-        request.finish(withComposedVideoFrame: frame)
-        Self.recordRequest(seconds: { let c = start.duration(to: .now).components; return Double(c.seconds) + Double(c.attoseconds) * 1e-18 }())
+        Self.fillVideoRangeBlack(buffer)
+        request.finish(withComposedVideoFrame: buffer)
+        Self.recordRequest(seconds: elapsedSeconds(since: start))
     }
 
     enum CompositorError: Error {
-        case noSourceFrame
+        case noRenderBuffer
+    }
+
+    private func elapsedSeconds(since start: ContinuousClock.Instant) -> Double {
+        let components = start.duration(to: .now).components
+        return Double(components.seconds) + Double(components.attoseconds) * 1e-18
+    }
+
+    /// 420v video-range black: luma 16, interleaved CbCr 128. Filling the
+    /// full rows (padding included) keeps the buffer deterministic
+    /// everywhere, though L2's hash only reads the image bytes.
+    static func fillVideoRangeBlack(_ buffer: CVPixelBuffer) {
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        if let luma = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) {
+            memset(luma, 16, CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+                * CVPixelBufferGetHeightOfPlane(buffer, 0))
+        }
+        if let chroma = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) {
+            memset(chroma, 128, CVPixelBufferGetBytesPerRowOfPlane(buffer, 1)
+                * CVPixelBufferGetHeightOfPlane(buffer, 1))
+        }
     }
 
     // MARK: - Probe instrumentation

@@ -1,99 +1,40 @@
+import AppKit
 import GyeolCore
 import SwiftUI
-import UniformTypeIdentifiers
 
 @main
 struct GyeolApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        // No standalone player window (G12): every window is a document
+        // window created by NSDocumentController. SwiftUI requires at least
+        // one Scene; Settings is the one that does not open at launch.
+        Settings {
+            EmptyView()
         }
         .commands {
-            // Document lifecycle goes through NSDocumentController (M1.3's
-            // adapter); the SwiftUI window above stays the media preview.
-            CommandGroup(after: .newItem) {
+            CommandGroup(replacing: .newItem) {
                 Button("새 프로젝트") {
                     NSDocumentController.shared.newDocument(nil)
                 }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
-                Button("프로젝트 열기…") {
+                .keyboardShortcut("n")
+                Button("열기…") {
                     NSDocumentController.shared.openDocument(nil)
                 }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .keyboardShortcut("o")
             }
         }
     }
 }
 
-struct ContentView: View {
-    @State private var controller = PlaybackController()
-    @State private var showImporter = false
-
-    var body: some View {
-        VStack(spacing: 12) {
-            PlayerLayerView(player: controller.player)
-                .frame(minWidth: 640, minHeight: 360)
-                .background(.black)
-
-            HStack(spacing: 16) {
-                Button("열기…") { showImporter = true }
-                Button {
-                    Task { await controller.step(by: -1) }
-                } label: { Image(systemName: "backward.frame.fill") }
-                    .disabled(controller.loadState != .ready || controller.isPlaying)
-                Button {
-                    controller.togglePlayPause()
-                } label: {
-                    Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
-                }
-                .disabled(controller.loadState != .ready)
-                Button {
-                    Task { await controller.step(by: 1) }
-                } label: { Image(systemName: "forward.frame.fill") }
-                    .disabled(controller.loadState != .ready || controller.isPlaying)
-            }
-
-            statusView
-        }
-        .padding()
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.movie]) { result in
-            switch result {
-            case .success(let url):
-                Task { await controller.open(url: url) }
-            case .failure(let error):
-                // F10: a dropped failure is silent loss (PRD 7.4-6) even
-                // when nothing crashes. Same surface as any failed open.
-                controller.reportOpenFailure(String(describing: error))
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var statusView: some View {
-        VStack(spacing: 4) {
-            switch controller.loadState {
-            case .empty:
-                Text("파일을 열어 주세요").foregroundStyle(.secondary)
-            case .loading:
-                ProgressView()
-            case .failed(let message):
-                Text(message).foregroundStyle(.red)
-            case .ready:
-                HStack(spacing: 12) {
-                    if let rate = controller.projectRate {
-                        Text("\(rate.rawValue) fps")
-                    }
-                    Text("frame \(controller.playheadFrame)\(controller.frameCount.map { " / \($0)" } ?? " / ?")")
-                        .monospacedDigit()
-                    Text(controller.clockDisplay).foregroundStyle(.secondary)
-                }
-                if let report = controller.lastStopReport {
-                    Text(report)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-            }
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // The AppKit document lifecycle would do this on its own; under the
+        // SwiftUI lifecycle it is explicit: launching without a document
+        // opens an untitled one.
+        if NSDocumentController.shared.documents.isEmpty {
+            NSDocumentController.shared.newDocument(nil)
         }
     }
 }
