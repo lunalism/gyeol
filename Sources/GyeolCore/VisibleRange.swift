@@ -95,6 +95,25 @@ public enum VisibleRange {
         }
     }
 
+    // MARK: - Hit test (D28: in Core, sharing the search)
+
+    /// The clip occupying `time` on `track`, or nil. "Which clip is at
+    /// this time" after the app converts pixels to time is a pure
+    /// computation, and it lives HERE so the binary search exists once —
+    /// duplicating it in the app is what §5.6.5 is trying to prevent
+    /// (D28). Same half-open convention as the visibility queries: a clip
+    /// covers [start, start + duration).
+    public static func clip(at time: DocumentTime, in track: Track) -> Clip? {
+        let clips = track.clips
+        guard !clips.isEmpty else { return nil }
+        // Shares lowerBound with the visible-range queries: the candidate
+        // is the last clip starting at or before `time`.
+        let firstAfter = lowerBound(clips, startingAt: time.ticks + 1) { $0.timelineStart.ticks }
+        guard firstAfter > clips.startIndex else { return nil }
+        let candidate = clips[firstAfter - 1]
+        return endTicks(of: candidate) > time.ticks ? candidate : nil
+    }
+
     // MARK: - Markers
 
     /// The markers whose time lies in [start, end). Point events: no

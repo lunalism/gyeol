@@ -28,8 +28,38 @@ import GyeolCore
 // its consumer in every fixture consumer downstream.
 
 guard CommandLine.arguments.count > 1 else {
-    print("usage: FixtureGen <output-directory> [--three-hour]")
+    print("usage: FixtureGen <output-directory> [--three-hour] | --split-check <package.gyeol>")
     exit(1)
+}
+
+// M2.3 one-off verification: split clips of the REAL three-hour fixture
+// (24fps source in a 30fps project — §6.2's mixed-rate consumer) through
+// the Core edit API, on frame-aligned times from FrameMapping, and confirm
+// the full validator and a decode round trip both accept the result.
+if CommandLine.arguments[1] == "--split-check", CommandLine.arguments.count > 2 {
+    let packageURL = URL(fileURLWithPath: CommandLine.arguments[2])
+    let data = try Data(contentsOf: packageURL.appendingPathComponent("document.json"))
+    var document = try GyeolCoding.makeDecoder().decode(GyeolDocument.self, from: data)
+    let rate = document.settings.frameRate
+    var splits = 0
+    for track in document.tracks {
+        // Split the first three clips of every track at their mid frame.
+        for clip in track.clips.prefix(3) {
+            guard let range = document.allowedSplitRange(ofClip: clip.id, inTrack: track.id) else { continue }
+            let midTicks = (range.lowerBound + range.upperBound) / 2
+            let frame = FrameMapping.frameIndex(at: DocumentTime(ticks: midTicks), rate: rate)
+            let time = FrameMapping.time(ofFrame: frame, rate: rate)
+            guard range.contains(time.ticks) else { continue }
+            document = try document.splittingClip(clip.id, inTrack: track.id, at: time)
+            splits += 1
+        }
+    }
+    // Decode round trip = the decoder's full validation accepting the result.
+    let encoded = try GyeolCoding.makeEncoder().encode(document)
+    _ = try GyeolCoding.makeDecoder().decode(GyeolDocument.self, from: encoded)
+    let clipTotal = document.tracks.map(\.clips.count).reduce(0, +)
+    print("split-check: \(splits) splits on \(rate.rawValue)fps grid, \(clipTotal) clips, re-decode OK")
+    exit(0)
 }
 let outDir = URL(fileURLWithPath: CommandLine.arguments[1])
 let threeHourMode = CommandLine.arguments.contains("--three-hour")

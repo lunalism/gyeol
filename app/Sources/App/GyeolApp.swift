@@ -25,6 +25,21 @@ struct GyeolApp: App {
                 }
                 .keyboardShortcut("o")
             }
+            // Explicit ⌘Z/⇧⌘Z wired to the CURRENT DOCUMENT's undo manager
+            // (D27): the SwiftUI scene is not in the document window's
+            // responder chain, so the default undoRedo commands cannot be
+            // trusted to reach NSDocument's manager — explicit routing is
+            // verifiable, the default is not.
+            CommandGroup(replacing: .undoRedo) {
+                Button("실행 취소") {
+                    NSDocumentController.shared.currentDocument?.undoManager?.undo()
+                }
+                .keyboardShortcut("z")
+                Button("실행 복귀") {
+                    NSDocumentController.shared.currentDocument?.undoManager?.redo()
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
         }
     }
 }

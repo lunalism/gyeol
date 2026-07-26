@@ -24,13 +24,41 @@ import Testing
 // as app leaks without an app-probe cross-check.
 
 @Suite @MainActor struct DocumentLifecycleMeasurement {
+    /// M2.3 MEASURED ADDITION: a document that took a REAL EDIT (an undo
+    /// group through `applyEdit`) is retained after close by AppKit's own
+    /// `-[NSDocument _scheduleAutosavingAfterDelay:reset:]` timer block —
+    /// traced with `leaks --traceTree`; the root is an AppKit
+    /// `__NSMallocBlock__` on an NSTimer, i.e. SYSTEM-owned under the g5
+    /// ownership doctrine (M2.2). The manual undo group is what triggers
+    /// the scheduling (`groupsByEvent = false`, D27); the default run-loop
+    /// grouping does not — measured, both ways, in a minimal NSDocument
+    /// probe. Neither `removeAllActions` nor `updateChangeCount(.changeCleared)`
+    /// unschedules it, and no public API does. Deallocation timing after
+    /// an edited close therefore belongs to AppKit's autosave timer; the
+    /// strict isolation tests below deliberately stay on the M2.2-era
+    /// dirty condition (change count only, no undo group) so they keep
+    /// measuring what they measured.
+    @Test func editedDocumentRidesAppKitAutosaveTimerAfterClose() throws {
+        weak var weakFile: GyeolDocumentFile?
+        autoreleasepool {
+            let file = GyeolDocumentFile()
+            file.applyEdit(.empty, actionName: "edit")
+            weakFile = file
+            file.close()
+        }
+        for _ in 0..<5 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        withKnownIssue("AppKit autosave timer holds the edited document past close (system-owned; measured)") {
+            #expect(weakFile == nil)
+        }
+    }
+
     /// Isolation stage 1: no window at all. If this leaks, the @Observable
     /// macro or NSDocument machinery retains the document by itself.
     @Test func documentWithoutWindowDeallocates() throws {
         weak var weakFile: GyeolDocumentFile?
         autoreleasepool {
             let file = GyeolDocumentFile()
-            file.replaceDocument(.empty)
+            file.updateChangeCount(.changeDone)  // M2.2-era dirty condition; see editedDocumentNote below
             weakFile = file
             file.close()
         }
@@ -44,7 +72,7 @@ import Testing
         weak var weakFile: GyeolDocumentFile?
         autoreleasepool {
             let file = GyeolDocumentFile()
-            file.replaceDocument(.empty)
+            file.updateChangeCount(.changeDone)  // M2.2-era dirty condition; see editedDocumentNote below
             let window = NSWindow(contentViewController: NSHostingController(rootView: Text("x")))
             file.addWindowController(NSWindowController(window: window))
             weakFile = file
@@ -76,7 +104,7 @@ import Testing
         weak var weakFile: GyeolDocumentFile?
         autoreleasepool {
             let file = GyeolDocumentFile()
-            file.replaceDocument(.empty)
+            file.updateChangeCount(.changeDone)  // M2.2-era dirty condition; see editedDocumentNote below
             let window = NSWindow(contentViewController: NSHostingController(rootView: AnyView(makeView(file))))
             file.addWindowController(NSWindowController(window: window))
             weakFile = file
@@ -168,7 +196,7 @@ import Testing
         // dropped from this harness).
         autoreleasepool {
             let file = GyeolDocumentFile()
-            file.replaceDocument(.empty)
+            file.updateChangeCount(.changeDone)  // M2.2-era dirty condition; see editedDocumentNote below
             if viaDocumentController {
                 NSDocumentController.shared.addDocument(file)
             }
@@ -225,7 +253,7 @@ import Testing
         weak var weakFile: GyeolDocumentFile?
         autoreleasepool {
             let file = GyeolDocumentFile()
-            file.replaceDocument(.empty)
+            file.updateChangeCount(.changeDone)  // M2.2-era dirty condition; see editedDocumentNote below
             file.makeWindowControllers()
             weakFile = file
             for _ in 0..<25 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
@@ -248,7 +276,7 @@ import Testing
             weak var weakWindow: NSWindow?
             autoreleasepool {
                 let file = GyeolDocumentFile()
-                file.replaceDocument(.empty)
+                file.updateChangeCount(.changeDone)  // M2.2-era dirty condition; see editedDocumentNote below
                 file.makeWindowControllers()
                 weakFile = file
                 weakWindow = file.windowControllers.first?.window

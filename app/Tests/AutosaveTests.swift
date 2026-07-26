@@ -39,7 +39,7 @@ private func inode(_ path: String) -> Int? {
         // wrapper write): establishes fileURL and fileModificationDate the
         // way the app does.
         let file = GyeolDocumentFile()
-        file.replaceDocument(makeDocument(markerCount: 1))
+        file.applyEdit(makeDocument(markerCount: 1), actionName: "test edit")
         file.storeBookmark(try dir.bookmarkData(), for: MediaID())
         try await file.save(to: packageURL, ofType: GyeolDocumentFile.documentType, for: .saveAsOperation)
 
@@ -51,7 +51,7 @@ private func inode(_ path: String) -> Int? {
 
         // Edit, then drive the autosave machinery itself.
         let edited = makeDocument(markerCount: 2)
-        file.replaceDocument(edited)
+        file.applyEdit(edited, actionName: "test edit")
         #expect(file.hasUnautosavedChanges)
         try await file.autosave(withImplicitCancellability: false)
         #expect(!file.hasUnautosavedChanges)
@@ -81,7 +81,7 @@ private func inode(_ path: String) -> Int? {
                 "document.json rewritten in place — partial-write damage is possible on the autosave path")
 
         // Steady state: a second autosave behaves the same way.
-        file.replaceDocument(makeDocument(markerCount: 3))
+        file.applyEdit(makeDocument(markerCount: 3), actionName: "test edit")
         let bodyInodeBeforeSecond = inode(bodyPath)
         try await file.autosave(withImplicitCancellability: false)
         let secondReopen = GyeolDocumentFile()

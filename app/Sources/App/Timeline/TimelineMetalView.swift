@@ -35,6 +35,11 @@ final class TimelineMetalView: MTKView {
     var onScrubBegan: (() -> Void)?
     var onScrub: ((Int) -> Void)?
     var onScrubEnded: (() -> Void)?
+    /// Click selection (M2.3): nil means clicked empty space (deselect).
+    var onSelectClip: ((GyeolDocumentFile.SelectedClip?) -> Void)?
+    var selectedClipID: ClipID? {
+        didSet { if selectedClipID != oldValue { needsDisplay = true } }
+    }
 
     private var lastDocument: GyeolDocument?
     private var lastMediaURLs: [MediaID: URL] = [:]
@@ -135,7 +140,8 @@ final class TimelineMetalView: MTKView {
             viewport: viewport,
             sizePoints: bounds.size,
             scale: window?.backingScaleFactor ?? 2,
-            playheadFrame: playheadFrameProvider?() ?? 0)
+            playheadFrame: playheadFrameProvider?() ?? 0,
+            selectedClipID: selectedClipID)
         renderer.draw(inputs: inputs, passDescriptor: passDescriptor) { commandBuffer in
             commandBuffer.present(drawable)
         }
@@ -163,16 +169,35 @@ final class TimelineMetalView: MTKView {
 
     // MARK: - Scrubbing (M2.2 task 4)
 
-    // Dragging the playhead is a TRANSPORT operation, not editing: M2.2
-    // adds no selection and no hit testing (read-only milestone), so the
-    // only mouse interaction is the ruler scrub.
+    // Ruler drag scrubs (a transport operation); a click in the lanes
+    // selects (M2.3). Pixel→time is viewport math HERE, pixel→track is the
+    // shared lane layout, and "which clip is at this time" is Core's hit
+    // test — the same binary search the visibility queries use (D28).
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard point.y <= TimelineRenderer.rulerHeight else { return }
-        scrubbing = true
-        onScrubBegan?()
-        onScrub?(frame(atX: point.x))
-        needsDisplay = true
+        if point.y <= TimelineRenderer.rulerHeight {
+            scrubbing = true
+            onScrubBegan?()
+            onScrub?(frame(atX: point.x))
+            needsDisplay = true
+            return
+        }
+        guard let document = lastDocument else { return }
+        let layout = TimelineLaneLayout(
+            document: document, height: bounds.height,
+            rulerHeight: TimelineRenderer.rulerHeight,
+            subtitleLaneHeight: TimelineRenderer.subtitleLaneHeight)
+        guard let trackIndex = layout.documentTrackIndex(atY: point.y) else {
+            onSelectClip?(nil)
+            return
+        }
+        let track = document.tracks[trackIndex]
+        let time = DocumentTime(ticks: viewport.ticks(atX: point.x))
+        if let clip = VisibleRange.clip(at: time, in: track) {
+            onSelectClip?(.init(trackID: track.id, clipID: clip.id))
+        } else {
+            onSelectClip?(nil)
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {

@@ -84,3 +84,40 @@ extension Double {
         Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
     }
 }
+
+/// The timeline's vertical lane arithmetic, in ONE place: the renderer
+/// draws lanes with it and the view's click-to-select maps y back through
+/// it. Two copies of this math would disagree exactly one resize after
+/// they were written. Pixels stay in the app — Core never sees this
+/// (§5.6.5); the app converts y → document track index here and x → time
+/// via the viewport, THEN asks Core which clip is at that time.
+struct TimelineLaneLayout {
+    let laneTop: Double
+    let laneHeight: Double
+    /// Document track indices in VISUAL order, top to bottom: video tracks
+    /// reversed (§5.8 — higher index composites above) then audio.
+    let visualOrder: [Int]
+
+    init(document: GyeolDocument, height: Double, rulerHeight: Double, subtitleLaneHeight: Double) {
+        let video = document.tracks.indices.filter { document.tracks[$0].kind == .video }
+        let audio = document.tracks.indices.filter { document.tracks[$0].kind == .audio }
+        visualOrder = video.reversed() + audio
+        laneTop = rulerHeight + subtitleLaneHeight
+        laneHeight = max(10, (height - laneTop) / Double(max(1, visualOrder.count)))
+    }
+
+    /// The document track index under `y`, or nil above the lanes / below
+    /// the last one.
+    func documentTrackIndex(atY y: Double) -> Int? {
+        guard y >= laneTop else { return nil }
+        let visualIndex = Int((y - laneTop) / laneHeight)
+        guard visualOrder.indices.contains(visualIndex) else { return nil }
+        return visualOrder[visualIndex]
+    }
+
+    /// The vertical extent of the lane at `visualIndex`.
+    func laneBounds(visualIndex: Int) -> (y0: Double, y1: Double) {
+        let y0 = laneTop + Double(visualIndex) * laneHeight
+        return (y0, y0 + laneHeight)
+    }
+}

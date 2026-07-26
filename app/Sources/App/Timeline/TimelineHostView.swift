@@ -30,10 +30,16 @@ struct TimelineHostView: NSViewRepresentable {
         view.onScrubBegan = { [weak playback] in playback?.beginScrub() }
         view.onScrub = { [weak playback] frame in playback?.scrub(toFrame: frame) }
         view.onScrubEnded = { [weak playback] in playback?.endScrub() }
+        // weak file, same G5 rationale: selection is a write into app
+        // state, not a reason for the view to own the document.
+        view.onSelectClip = { [weak file] selection in
+            file?.selectedClip = selection
+        }
         return view
     }
 
     func updateNSView(_ view: TimelineMetalView, context: Context) {
+        view.selectedClipID = file.selectedClip?.clipID
         view.apply(
             document: file.document,
             mediaURLs: mediaURLs,

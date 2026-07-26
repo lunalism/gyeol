@@ -121,24 +121,13 @@ public struct GyeolDocument: Hashable, Sendable {
         subtitleStyle: SubtitleStyle = .default,
         markers: [Marker] = []
     ) {
-        if let violation = Self.subtitleOrderingViolation(subtitles) {
-            preconditionFailure(violation)
-        }
-        if let violation = Self.markerOrderingViolation(markers) {
-            preconditionFailure(violation)
-        }
-        for track in tracks {
-            for clip in track.clips {
-                if case .media(let source) = clip.source {
-                    precondition(
-                        media[source.mediaID] != nil,
-                        "clip \(clip.id.rawValue.uuidString) references media absent from the pool")
-                }
-            }
-        }
         let resolvedDuration = duration ?? Self.derivedDuration(of: tracks)
-        if let violation = Self.durationViolation(resolvedDuration, tracks: tracks) {
-            preconditionFailure(violation)
+        // The ONE full validator (D26) — same function the decoder and the
+        // edit transaction's cross-check use.
+        if let violation = Self.fullValidationViolation(
+            media: media, tracks: tracks, duration: resolvedDuration,
+            subtitles: subtitles, markers: markers) {
+            preconditionFailure(violation.message)
         }
         self.schemaVersion = schemaVersion
         self.settings = settings
@@ -155,6 +144,54 @@ public struct GyeolDocument: Hashable, Sendable {
     public static let empty = GyeolDocument(
         schemaVersion: .current,
         settings: ProjectSettings(frameRate: .fps30, renderWidth: 1920, renderHeight: 1080))
+
+    /// One cross-field/document-level violation, tagged with the field it
+    /// belongs to so the decoder can throw with the right coding key.
+    struct ValidationViolation {
+        enum Field { case tracks, subtitles, markers, duration }
+        let field: Field
+        let message: String
+    }
+
+    /// THE full-document validator (D26): init preconditions, the decoder,
+    /// and the edit transaction's debug cross-check all call THIS function.
+    /// A second implementation anywhere would be the encoder-duplication
+    /// failure §5.6.4 forbids — the cross-check could not detect its own
+    /// disagreement with decode.
+    ///
+    /// Composed from the same per-collection helpers the child types use,
+    /// so per-track decode validation and this one cannot drift either.
+    static func fullValidationViolation(
+        media: [MediaID: MediaReference],
+        tracks: [Track],
+        duration: DocumentTime,
+        subtitles: [SubtitleSegment],
+        markers: [Marker]
+    ) -> ValidationViolation? {
+        for track in tracks {
+            if let violation = Track.clipOrderingViolation(track.clips) {
+                return ValidationViolation(field: .tracks, message: violation)
+            }
+            for clip in track.clips {
+                if case .media(let source) = clip.source, media[source.mediaID] == nil {
+                    return ValidationViolation(field: .tracks, message: """
+                    clip \(clip.id.rawValue.uuidString) references media \
+                    \(source.mediaID.rawValue.uuidString) absent from the media pool
+                    """)
+                }
+            }
+        }
+        if let violation = subtitleOrderingViolation(subtitles) {
+            return ValidationViolation(field: .subtitles, message: violation)
+        }
+        if let violation = markerOrderingViolation(markers) {
+            return ValidationViolation(field: .markers, message: violation)
+        }
+        if let violation = durationViolation(duration, tracks: tracks) {
+            return ValidationViolation(field: .duration, message: violation)
+        }
+        return nil
+    }
 
     /// The last clip's end across all tracks — the pre-field playable
     /// domain, used as the default when `duration` is absent.
@@ -257,36 +294,26 @@ extension GyeolDocument: Codable {
         let subtitles = try container.decode([SubtitleSegment].self, forKey: .subtitles)
         let markers = try container.decode([Marker].self, forKey: .markers)
 
-        if let violation = Self.subtitleOrderingViolation(subtitles) {
-            throw DecodingError.dataCorruptedError(
-                forKey: .subtitles, in: container, debugDescription: violation)
-        }
-        if let violation = Self.markerOrderingViolation(markers) {
-            throw DecodingError.dataCorruptedError(
-                forKey: .markers, in: container, debugDescription: violation)
-        }
-        // A dangling media reference is unrenderable; catching it at load
-        // beats a nil deref at render time.
-        for track in tracks {
-            for clip in track.clips {
-                if case .media(let source) = clip.source, media[source.mediaID] == nil {
-                    throw DecodingError.dataCorruptedError(
-                        forKey: .tracks, in: container,
-                        debugDescription: """
-                        clip \(clip.id.rawValue.uuidString) references media \
-                        \(source.mediaID.rawValue.uuidString) absent from the media pool
-                        """)
-                }
-            }
-        }
-
         // Absent in files written before the field existed: derive the old
         // playable domain (last clip end) so their meaning is unchanged.
         let duration = try container.decodeIfPresent(DocumentTime.self, forKey: .duration)
             ?? Self.derivedDuration(of: tracks)
-        if let violation = Self.durationViolation(duration, tracks: tracks) {
+
+        // The ONE full validator (D26): catching a dangling media reference
+        // at load beats a nil deref at render time, and using the same
+        // function as init and the edit cross-check means the three cannot
+        // disagree about what a valid document is.
+        if let violation = Self.fullValidationViolation(
+            media: media, tracks: tracks, duration: duration,
+            subtitles: subtitles, markers: markers) {
+            let key: CodingKeys = switch violation.field {
+            case .tracks: .tracks
+            case .subtitles: .subtitles
+            case .markers: .markers
+            case .duration: .duration
+            }
             throw DecodingError.dataCorruptedError(
-                forKey: .duration, in: container, debugDescription: violation)
+                forKey: key, in: container, debugDescription: violation.message)
         }
         self.duration = duration
 

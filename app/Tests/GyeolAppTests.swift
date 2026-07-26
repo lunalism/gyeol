@@ -49,7 +49,7 @@ private struct FixtureWorld {
     /// Writes the package the way NSDocument does (wrapper → disk).
     func writePackage(bookmarks: [MediaID: Data] = [:]) throws {
         let file = GyeolDocumentFile()
-        file.replaceDocument(document)
+        file.applyEdit(document, actionName: "test edit")
         for (id, data) in bookmarks { file.storeBookmark(data, for: id) }
         let wrapper = try file.fileWrapper(ofType: "gyeol")
         try wrapper.write(to: packageURL, options: .atomic, originalContentsURL: nil)
@@ -287,7 +287,7 @@ private struct FixtureWorld {
         // Second save over the existing package, the way our write path
         // does it (FileWrapper.write, .atomic, originalContentsURL set).
         let reopened = try world.openPackage()
-        reopened.replaceDocument(reopened.document)  // dirty, same content
+        reopened.applyEdit(reopened.document, actionName: "test edit")  // dirty, same content
         let wrapper = try reopened.fileWrapper(ofType: "gyeol")
         try wrapper.write(to: world.packageURL, options: .atomic, originalContentsURL: world.packageURL)
 

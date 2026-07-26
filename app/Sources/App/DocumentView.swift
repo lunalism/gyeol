@@ -10,7 +10,7 @@ import SwiftUI
 /// OBSERVATION (G2): NSDocument is not Observable, so `GyeolDocumentFile`
 /// adopts the `@Observable` macro. Reading `file.document` inside `body`
 /// and inside `.task(id:)` registers SwiftUI dependency tracking, and every
-/// mutation path writes that one property (`replaceDocument`, `read`), so
+/// mutation path writes that one property (`applyEdit`, `read`), so
 /// open, edit, revert and undo all flow through the same tracked write —
 /// no `.id(revision)` manual refresh, no parallel view model to drift.
 ///
@@ -71,6 +71,16 @@ struct DocumentView: View {
                 Task { await playback.step(by: 1) }
             } label: { Image(systemName: "forward.frame.fill") }
                 .disabled(playback.loadState != .ready || playback.isPlaying)
+            Divider().frame(height: 16)
+            // The blade (M2.3): split the selected clip at the playhead.
+            // Enabled exactly when Core's allowedSplitRange contains the
+            // playhead — the reason the action never throws (D26).
+            Button {
+                file.splitSelectedClipAtPlayhead()
+            } label: { Image(systemName: "scissors") }
+                .keyboardShortcut("k")
+                .disabled(playback.loadState != .ready || !file.canSplitSelectionAtPlayhead)
+                .help("선택 클립을 재생헤드에서 분할 (⌘K)")
         }
     }
 

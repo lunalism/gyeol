@@ -33,6 +33,8 @@ final class TimelineRenderer {
         /// frame while playing — NEVER from `player.currentTime()`
         /// (§7.4-8: the player clock leaves the content domain).
         var playheadFrame: Int
+        /// The selected clip (M2.3). App state, never document state.
+        var selectedClipID: ClipID? = nil
     }
 
     struct DrawStats {
@@ -88,6 +90,7 @@ final class TimelineRenderer {
         var scale: CGFloat
         var documentRevision: Int
         var contentRevision: Int
+        var selectedClipID: ClipID?
     }
     private var builtKey: StaticKey?
     private var staticBuffer: MTLBuffer?
@@ -165,7 +168,8 @@ final class TimelineRenderer {
         let cpuStart = CFAbsoluteTimeGetCurrent()
         let key = StaticKey(
             viewport: inputs.viewport, sizePoints: inputs.sizePoints, scale: inputs.scale,
-            documentRevision: documentRevision, contentRevision: contentRevision)
+            documentRevision: documentRevision, contentRevision: contentRevision,
+            selectedClipID: inputs.selectedClipID)
         var rebuilt = false
         if key != builtKey {
             rebuildStatic(inputs: inputs)
@@ -256,26 +260,24 @@ final class TimelineRenderer {
         let visibleStart = docTime(startTicks)
         let visibleEnd = docTime(endTicks)
 
-        // Track lanes: video tracks stack by document index, higher index
-        // ABOVE (§5.8's compositing order, mirrored visually), audio below.
-        let videoTracks = document.tracks.enumerated().filter { $0.element.kind == .video }
-        let audioTracks = document.tracks.enumerated().filter { $0.element.kind == .audio }
-        let laneTop = Self.rulerHeight + Self.subtitleLaneHeight
-        let laneCount = max(1, videoTracks.count + audioTracks.count)
-        let laneHeight = max(10, (height - laneTop) / Double(laneCount))
-        let orderedTracks = Array(videoTracks.reversed()) + audioTracks
+        // Track lanes via the SHARED layout (video above audio, §5.8 order
+        // mirrored visually) — the same math the view's click-to-select
+        // uses, so drawing and hit testing cannot disagree.
+        let layout = TimelineLaneLayout(
+            document: document, height: height,
+            rulerHeight: Self.rulerHeight, subtitleLaneHeight: Self.subtitleLaneHeight)
 
-        for (laneIndex, entry) in orderedTracks.enumerated() {
-            let y0 = laneTop + Double(laneIndex) * laneHeight
-            let y1 = y0 + laneHeight
+        for (laneIndex, trackIndex) in layout.visualOrder.enumerated() {
+            let (y0, y1) = layout.laneBounds(visualIndex: laneIndex)
             addQuad(&vertices, x0: 0, y0: y0, x1: width, y1: y1,
                     color: laneIndex.isMultiple(of: 2) ? Color(0.135, 0.135, 0.145) : Color(0.12, 0.12, 0.13))
             addQuad(&vertices, x0: 0, y0: y1 - 0.5, x1: width, y1: y1, color: Color(0.09, 0.09, 0.10))
 
-            let track = entry.element
+            let track = document.tracks[trackIndex]
             let isVideo = track.kind == .video
             let body = isVideo ? Color(0.23, 0.40, 0.60) : Color(0.20, 0.42, 0.28)
             let border = isVideo ? Color(0.38, 0.56, 0.76) : Color(0.32, 0.58, 0.42)
+            let selectedBorder = Color(0.98, 0.85, 0.35)
 
             // Core's stateless visible-range query — the one binary search
             // (D26/D28), never a per-frame full scan.
@@ -286,9 +288,13 @@ final class TimelineRenderer {
                 let x0 = max(cx0, -2)
                 let x1 = min(cx1, width + 2)
                 guard x1 > x0 else { continue }
-                addQuad(&vertices, x0: x0, y0: y0 + 2, x1: x1, y1: y1 - 2.5, color: border)
+                let isSelected = clip.id == inputs.selectedClipID
+                addQuad(&vertices, x0: x0, y0: y0 + 2, x1: x1, y1: y1 - 2.5,
+                        color: isSelected ? selectedBorder : border)
                 if x1 - x0 > 2 {
-                    addQuad(&vertices, x0: x0 + 1, y0: y0 + 3, x1: x1 - 1, y1: y1 - 3.5, color: body)
+                    let inset = isSelected ? 2.0 : 1.0
+                    addQuad(&vertices, x0: x0 + inset, y0: y0 + 2 + inset,
+                            x1: x1 - inset, y1: y1 - 2.5 - inset, color: body)
                 }
                 if !isVideo {
                     addWaveform(
