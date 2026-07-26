@@ -1,0 +1,45 @@
+import GyeolCore
+import SwiftUI
+
+/// SwiftUI bridge for the timeline `MTKView`. All wiring, no logic: the
+/// playhead comes from the controller's frame index (§7.4-8), scrub events
+/// go back to the controller's transport, and document changes flow into
+/// the renderer.
+struct TimelineHostView: NSViewRepresentable {
+    // Strong `file`, matching DocumentView's documented G5 stance: the
+    // bridged struct is part of the window chain NSDocument.close() tears
+    // down. (M2.2's g5 rounds briefly indicted this reference; the leaks
+    // reference tree exonerated it — the residual holder was AppKit's own
+    // window caching. See the milestone report.)
+    let file: GyeolDocumentFile
+    let playback: PlaybackController
+    let mediaURLs: [MediaID: URL]
+
+    func makeNSView(context: Context) -> TimelineMetalView {
+        let view = TimelineMetalView()
+        // weak playback in every closure: the VIEW must not keep the
+        // controller (and through it the player) alive past document
+        // close (G5); ownership flows document → controller, never
+        // timeline → controller.
+        view.playheadFrameProvider = { [weak playback] in
+            playback?.timelinePlayheadFrame ?? 0
+        }
+        view.onPlaybackTick = { [weak playback] in
+            playback?.pollDisplayedFrame()
+        }
+        view.onScrubBegan = { [weak playback] in playback?.beginScrub() }
+        view.onScrub = { [weak playback] frame in playback?.scrub(toFrame: frame) }
+        view.onScrubEnded = { [weak playback] in playback?.endScrub() }
+        return view
+    }
+
+    func updateNSView(_ view: TimelineMetalView, context: Context) {
+        view.apply(
+            document: file.document,
+            mediaURLs: mediaURLs,
+            isPlaying: playback.isPlaying)
+        // Any observed transport change (step, stop snap, scrub) redraws;
+        // on-demand mode coalesces this into at most one draw per frame.
+        view.needsDisplay = true
+    }
+}

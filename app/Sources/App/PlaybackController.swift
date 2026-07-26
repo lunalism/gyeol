@@ -47,6 +47,28 @@ final class PlaybackController {
     /// signal (§7.4-6), not merely a quietly held frame.
     private(set) var untrustedDisplayPTSCount = 0
 
+    /// The media URLs the current composition was built from (M2.2): the
+    /// timeline's waveform loader reads these. They live HERE rather than
+    /// in a view-side @State copy because they are part of the load's
+    /// commit — set and cleared with the item they belong to, so the
+    /// timeline can never pair a stale URL set with a new composition.
+    private(set) var resolvedMediaURLs: [MediaID: URL] = [:]
+
+    /// Display-only playhead while playing (M2.2): what the TIMELINE draws
+    /// between stop handoffs. Derived from the displayed frame's PTS via
+    /// the adapter — never `player.currentTime()` (§7.4-8: the player
+    /// clock reports values outside the item duration) — and written to no
+    /// document or transport state. When stopped, the authoritative
+    /// `playheadFrame` is the answer.
+    private(set) var displayOnlyFrame = 0
+    var timelinePlayheadFrame: Int { isPlaying ? displayOnlyFrame : playheadFrame }
+    /// The most recent PTS the timeline's polling DRAINED from the video
+    /// output during this playback session. Kept because each vended
+    /// buffer is consumable once: a stop arriving right after a drain
+    /// would find the output empty, and this PTS is still genuine frame
+    /// evidence for the handoff (unlike the wall clock, which never is).
+    private var lastDrainedDisplayPTS: CMTime?
+
     private static let log = Logger(subsystem: "dev.gyeol.Gyeol", category: "Playback")
 
     private var videoOutput: AVPlayerItemVideoOutput?
@@ -106,6 +128,8 @@ final class PlaybackController {
         isPlaying = false
         player.replaceCurrentItem(with: nil)
         videoOutput = nil
+        lastDrainedDisplayPTS = nil
+        resolvedMediaURLs = [:]
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
@@ -148,8 +172,11 @@ final class PlaybackController {
 
             // Commit point — all or nothing.
             videoOutput = output
+            lastDrainedDisplayPTS = nil  // evidence never outlives its item
+            resolvedMediaURLs = mediaURLs
             player.replaceCurrentItem(with: item)
             playheadFrame = min(playheadFrame, max(0, frameCount - 1))
+            displayOnlyFrame = playheadFrame
             installRateObservationIfNeeded()
             if frameCount > 0 {
                 await seekToPlayhead(epoch: epoch)
@@ -180,6 +207,9 @@ final class PlaybackController {
         projectRate = nil
         frameCount = 0
         playheadFrame = 0
+        displayOnlyFrame = 0
+        lastDrainedDisplayPTS = nil
+        resolvedMediaURLs = [:]
         videoOutput = nil
         loadState = .failed(failure)
     }
@@ -202,6 +232,8 @@ final class PlaybackController {
             // epoch, the latter checks player.rate.
             transportEpoch += 1
             installClockObserverIfNeeded()
+            displayOnlyFrame = playheadFrame
+            lastDrainedDisplayPTS = nil  // this session's evidence only
             isPlaying = true
             player.play()
         }
@@ -213,6 +245,112 @@ final class PlaybackController {
         let epoch = transportEpoch
         playheadFrame = min(max(0, playheadFrame + delta), frameCount - 1)
         await seekToPlayhead(epoch: epoch)
+    }
+
+    // MARK: - Scrubbing (M2.2 task 4)
+
+    /// One scrub gesture = one transport operation with one epoch. The
+    /// epoch is taken at gesture start: it voids any in-flight stop
+    /// handoff, and anything that bumps the epoch mid-gesture (a rebuild,
+    /// shutdown) kills the gesture's seek pump at its next check.
+    private var scrubEpoch: Int?
+    private var scrubPumpActive = false
+    /// Diagnostic: seeks issued by scrubbing since load, for the M2.2
+    /// measurement report.
+    private(set) var scrubSeekCount = 0
+
+    func beginScrub() {
+        guard loadState == .ready, frameCount > 0 else { return }
+        if isPlaying {
+            // Scrubbing while playing is a stop path we own: with
+            // isPlaying already false, the rate observation's queued stop
+            // event dies on its guard, and the gesture's frame — not a
+            // snap of a torn-down clock — is the authority (§7.4-8).
+            isPlaying = false
+            player.pause()
+        }
+        transportEpoch += 1
+        scrubEpoch = transportEpoch
+    }
+
+    func scrub(toFrame frame: Int) {
+        guard let epoch = scrubEpoch, epoch == transportEpoch,
+              loadState == .ready, frameCount > 0 else { return }
+        playheadFrame = min(max(0, frame), frameCount - 1)
+        pumpScrubSeeks(epoch: epoch)
+    }
+
+    func endScrub() {
+        scrubEpoch = nil
+        // The pump keeps running until the player has landed on the final
+        // playheadFrame; nothing to flush here.
+    }
+
+    /// Serialized seek pump: at most ONE seek in flight, always to the
+    /// LATEST playheadFrame — a 60 Hz drag does not queue 60 seeks, it
+    /// coalesces to "seek, then seek again if the target moved".
+    ///
+    /// Only the completion-result overload of `seek` is used (§6.2): the
+    /// fire-and-forget overload cannot report cancellation and revives F7 —
+    /// `playheadFrame` at N with the player quietly elsewhere.
+    private func pumpScrubSeeks(epoch: Int) {
+        guard !scrubPumpActive, let rate = projectRate else { return }
+        scrubPumpActive = true
+        Task { @MainActor in
+            defer { scrubPumpActive = false }
+            var landed = -1
+            var retries = 0
+            while epoch == transportEpoch {
+                let target = playheadFrame
+                if target == landed { break }
+                let time = CMTimeAdapter.cmTimeForSeek(toFrame: target, projectRate: rate)
+                scrubSeekCount += 1
+                let finished = await player.seek(
+                    to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+                guard epoch == transportEpoch else { return }
+                if finished {
+                    landed = target
+                    retries = 0
+                    clockDisplay = "frame \(target)"
+                } else if playheadFrame == target {
+                    // Cancelled, no newer target of ours, no newer
+                    // transport op (epoch held): retry, bounded, then
+                    // surface rather than loop (§7.4-6).
+                    retries += 1
+                    if retries > 2 {
+                        clockDisplay = "frame \(target) — seek cancelled, player position unconfirmed"
+                        return
+                    }
+                }
+                // Cancelled because the drag moved on: loop re-reads
+                // playheadFrame and seeks to the newer target.
+            }
+        }
+    }
+
+    // MARK: - Display-only playhead polling (M2.2 task 2)
+
+    /// Called from the timeline's display link each tick while playing.
+    /// Vends the displayed frame from the video output and derives the
+    /// display-only frame index through the adapter. `currentTime()`
+    /// appears ONLY as the output's vend key — the API takes an item time
+    /// to answer "what should be displaying now" — never as frame
+    /// evidence.
+    func pollDisplayedFrame() {
+        guard isPlaying, let rate = projectRate, let output = videoOutput else { return }
+        let itemTime = player.currentTime()
+        guard output.hasNewPixelBuffer(forItemTime: itemTime) else { return }
+        var pts = CMTime.invalid
+        guard output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: &pts) != nil,
+              pts.isNumeric else { return }
+        lastDrainedDisplayPTS = pts
+        // Over-threshold PTS: display-only path holds the last good frame.
+        // No counter here — the counted diagnostic belongs to the stop
+        // handoff, where an untrusted PTS would have corrupted the
+        // AUTHORITATIVE frame; here it can only delay a cosmetic update.
+        guard let snap = CMTimeAdapter.documentTime(snappingToFrameGrid: pts, projectRate: rate),
+              !snap.exceedsQuarterFrameThreshold else { return }
+        displayOnlyFrame = min(snap.frameIndex, max(0, frameCount - 1))
     }
 
     // MARK: - The principle-8 handoff
@@ -270,7 +408,19 @@ final class PlaybackController {
             guard epoch == transportEpoch else { return }
         }
 
-        guard displayPTS.isNumeric else {
+        // M2.2: the timeline's display-link polling DRAINS the output (a
+        // vended buffer is consumable once), so a stop can find the output
+        // empty even though a frame is on screen. The drained PTS is that
+        // frame's PTS — genuine frame evidence from THIS session — so it
+        // substitutes before the kept-frame path. The wall clock still
+        // never does (§7.4-8: 확정할 수 없으면 확정하지 않는다).
+        var evidence = displayPTS
+        var evidenceNote = ""
+        if !evidence.isNumeric, let drained = lastDrainedDisplayPTS {
+            evidence = drained
+            evidenceNote = " (from drained display buffer)"
+        }
+        guard evidence.isNumeric else {
             // No frame evidence: the last confirmed index stays
             // authoritative (PRD 7.4-8); re-seek to it and say what
             // happened rather than guessing from a mid-frame wall clock.
@@ -282,14 +432,15 @@ final class PlaybackController {
         // A resume that arrived while we were reading the player voids the
         // handoff entirely — it must not finish with a seek (F2).
         guard epoch == transportEpoch else { return }
-        switch decideStopSnap(displayPTS: displayPTS) {
+        switch decideStopSnap(displayPTS: evidence) {
         case .adopt(let frameIndex, let report):
             // The adapter carried the L1 frame index (D23) — no second
             // mapping, no pull toward ticks / ticksPerFrame (PRD §6.2).
             playheadFrame = frameIndex
-            lastStopReport = report
+            displayOnlyFrame = frameIndex
+            lastStopReport = report + evidenceNote
         case .reject(let report):
-            lastStopReport = report
+            lastStopReport = report + evidenceNote
         case nil:
             return
         }

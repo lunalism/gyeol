@@ -65,6 +65,11 @@ targets:
       - path: Sources/App/PlaybackController.swift
       - path: Sources/App/DocumentView.swift
       - path: Sources/App/PlayerLayerView.swift
+      - path: Sources/App/Timeline/TimelineViewport.swift
+      - path: Sources/App/Timeline/WaveformStore.swift
+      - path: Sources/App/Timeline/TimelineRenderer.swift
+      - path: Sources/App/Timeline/TimelineMetalView.swift
+      - path: Sources/App/Timeline/TimelineHostView.swift
     dependencies:
       - package: GyeolCore
         product: GyeolCore

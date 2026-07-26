@@ -35,10 +35,15 @@ struct DocumentView: View {
                 newerMinorWarning
             }
             PlayerLayerView(player: playback.player)
-                .frame(minWidth: 640, minHeight: 360)
+                .frame(minWidth: 640, minHeight: 300)
                 .background(.black)
             transport
             status
+            // mediaURLs come from the CONTROLLER (set at the load's commit
+            // point), not from a view-side copy — the timeline can never
+            // pair a stale URL set with a new composition.
+            TimelineHostView(file: file, playback: playback, mediaURLs: playback.resolvedMediaURLs)
+                .frame(minHeight: 200)
         }
         .padding()
         // The G1 rebuild entry: any replacement of the document value —

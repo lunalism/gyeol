@@ -72,7 +72,7 @@ final class GyeolDocumentFile: NSDocument {
     override func makeWindowControllers() {
         let window = NSWindow(contentViewController: NSHostingController(
             rootView: DocumentView(file: self, playback: playback)))
-        window.setContentSize(NSSize(width: 480, height: 340))
+        window.setContentSize(NSSize(width: 960, height: 640))
         window.title = displayName
         addWindowController(NSWindowController(window: window))
     }
