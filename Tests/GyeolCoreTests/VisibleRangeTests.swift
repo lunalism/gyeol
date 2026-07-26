@@ -3,7 +3,7 @@ import Testing
 @testable import GyeolCore
 
 private func docTime(_ ticks: Int64) -> DocumentTime {
-    DocumentTime(exactly: try! RationalTime(value: ticks, timescale: 120_000))!
+    DocumentTime(ticks: ticks)
 }
 
 private func clip(start: Int64, duration: Int64) -> Clip {

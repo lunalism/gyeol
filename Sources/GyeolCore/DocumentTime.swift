@@ -80,10 +80,17 @@ public struct DocumentTime: Hashable, Sendable {
         self.ticks = value
     }
 
-    /// Internal fast path for code that already has ticks (decode, frame
-    /// mapping, adapter). Nothing is unchecked about it — every Int64 is a
-    /// valid tick count.
-    init(ticks: Int64) {
+    /// Exact construction from a tick count. Public since M2.2: the label
+    /// rule (§5.6.1/§5.6.2 — loss must be visible in the name) is about
+    /// LOSSY paths, and a tick count IS the canonical representation, so
+    /// this conversion has zero loss and nothing to disclose. Keeping it
+    /// internal forced callers into
+    /// `DocumentTime(exactly: try! RationalTime(...))!` — an unreachable
+    /// trap path of exactly the kind M2.1's fallback crash came from.
+    ///
+    /// What this does NOT license: deriving frame indices by dividing
+    /// ticks (§6.2) — that stays `FrameMapping`'s job alone.
+    public init(ticks: Int64) {
         self.ticks = ticks
     }
 

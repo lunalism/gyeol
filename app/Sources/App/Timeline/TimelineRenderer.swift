@@ -535,7 +535,7 @@ final class TimelineRenderer {
     // MARK: - Helpers
 
     private func docTime(_ ticks: Int64) -> DocumentTime {
-        DocumentTime(exactly: try! RationalTime(value: ticks, timescale: DocumentTime.timescale))!
+        DocumentTime(ticks: ticks)
     }
 
     // MARK: - Shaders

@@ -192,10 +192,10 @@ if threeHourMode {
     let print3 = try fingerprint(of: mediaURL)
 
     func ticks(seconds: Int64) -> DocumentTime {
-        DocumentTime(exactly: try! RationalTime(value: seconds * 120_000, timescale: 120_000))!
+        DocumentTime(ticks: seconds * 120_000)
     }
     func ticksExact(_ raw: Int64) -> DocumentTime {
-        DocumentTime(exactly: try! RationalTime(value: raw, timescale: 120_000))!
+        DocumentTime(ticks: raw)
     }
     func uuid(_ prefix: String, _ n: Int) -> UUID {
         UUID(uuidString: String(format: "\(prefix)-2222-4222-8222-%012d", n))!

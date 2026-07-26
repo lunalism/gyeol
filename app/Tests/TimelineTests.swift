@@ -113,12 +113,12 @@ import Testing
             settings: ProjectSettings(frameRate: .fps30, renderWidth: 320, renderHeight: 180),
             media: [mediaID: MediaReference(
                 relativePath: "clip.mov", displayName: "clip.mov",
-                duration: DocumentTime(exactly: try RationalTime(value: 360_000, timescale: 120_000))!)],
+                duration: DocumentTime(ticks: 360_000))],
             tracks: [Track(id: TrackID(), kind: .video, clips: [
                 Clip(
                     id: ClipID(),
                     timelineStart: .zero,
-                    duration: DocumentTime(exactly: try RationalTime(value: 360_000, timescale: 120_000))!,
+                    duration: DocumentTime(ticks: 360_000),
                     source: .media(MediaSource(mediaID: mediaID, sourceStart: .zero)))
             ])])
         let controller = PlaybackController()

@@ -178,14 +178,11 @@ enum TimelineProbe {
             var rebuilds = 0
             let visibleFrames = max(
                 1, FrameMapping.frameCount(
-                    for: DocumentTime(exactly: try! RationalTime(
-                        value: viewport.visibleEndTicks(width: sizePoints.width)
-                            - viewport.visibleStartTicks,
-                        timescale: DocumentTime.timescale))!, rate: rate))
+                    for: DocumentTime(ticks: viewport.visibleEndTicks(width: sizePoints.width)
+                        - viewport.visibleStartTicks),
+                    rate: rate))
             let baseFrame = FrameMapping.frameIndex(
-                at: DocumentTime(exactly: try! RationalTime(
-                    value: viewport.visibleStartTicks, timescale: DocumentTime.timescale))!,
-                rate: rate)
+                at: DocumentTime(ticks: viewport.visibleStartTicks), rate: rate)
             for i in 0..<draws {
                 let playhead = min(baseFrame + (i * visibleFrames) / draws, frameCount - 1)
                 guard let stats = draw(viewport, playhead: playhead) else { continue }
@@ -220,9 +217,7 @@ enum TimelineProbe {
         // rendering: the statelessness decision hangs on this number.
         let heaviestTrack = document.tracks.max(by: { $0.clips.count < $1.clips.count })!
         let maxSubtitleTicks = document.subtitles.lazy.map(\.duration.ticks).max() ?? 0
-        func docTime(_ t: Int64) -> DocumentTime {
-            DocumentTime(exactly: try! RationalTime(value: t, timescale: DocumentTime.timescale))!
-        }
+        func docTime(_ t: Int64) -> DocumentTime { DocumentTime(ticks: t) }
         func queryPhase(name: String, iterations: Int, body: (Int64) -> Int) {
             var sink = 0
             let spanTicks = Int64(sizePoints.width * midZoom.ticksPerPoint)
@@ -312,7 +307,7 @@ enum TimelineProbe {
     // MARK: - Reporting helpers
 
     private static func docTimeStandalone(_ ticks: Int64) -> DocumentTime {
-        DocumentTime(exactly: try! RationalTime(value: ticks, timescale: DocumentTime.timescale))!
+        DocumentTime(ticks: ticks)
     }
 
     private static func writePNG(texture: MTLTexture, to url: URL) {

@@ -63,9 +63,24 @@ func generateClip(spec: RateSpec, at url: URL) async throws {
         var maybeBuffer: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &maybeBuffer)
         let buffer = maybeBuffer!
-        // Content must differ per frame so per-frame hashes discriminate.
+        // Content must differ per frame so per-frame hashes discriminate —
+        // ROBUSTLY. The original gray ramp (level = n) did not survive
+        // H.264: quantization collapsed 31 of 240 adjacent pairs into
+        // byte-identical decoded frames (measured when hashes became the
+        // frame-identity oracle). Encode the index as 8 horizontal bands
+        // of extreme-contrast bits instead; large flat blocks at 30/220
+        // survive any reasonable encoder.
         CVPixelBufferLockBaseAddress(buffer, [])
-        memset(CVPixelBufferGetBaseAddress(buffer), Int32(n % 256), CVPixelBufferGetDataSize(buffer))
+        let base = CVPixelBufferGetBaseAddress(buffer)!
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        let bandHeight = height / 8
+        for band in 0..<8 {
+            let value: Int32 = (n >> band) & 1 == 1 ? 220 : 30
+            let start = band * bandHeight
+            let end = band == 7 ? height : start + bandHeight
+            memset(base + start * bytesPerRow, value, (end - start) * bytesPerRow)
+        }
         CVPixelBufferUnlockBaseAddress(buffer, [])
         guard adaptor.append(buffer, withPresentationTime: CMTimeMultiply(spec.frameDuration, multiplier: Int32(n))) else {
             fatalError("append: \(String(describing: writer.error))")
@@ -152,34 +167,100 @@ for spec in activeSpecs {
         if waited > 200 { fatalError("player never ready") }
     }
 
+    // Principle 7.4-8 applies to the PROBE too: hashing whatever buffer the
+    // poll happens to catch is confirming a frame without evidence it is
+    // the right frame — under load the output can still be vending the
+    // PREVIOUS seek's frame, and one stale buffer turns this gate into a
+    // false failure people learn to rerun (measured: 1 of 7 runs, frames
+    // 1–3, under concurrent GPU load).
+    //
+    // The evidence CANNOT be itemTimeForDisplay in this harness. Measured
+    // while fixing this: with a paused zero-tolerance seek and no renderer
+    // attached, the output vends buffers whose itemTimeForDisplay simply
+    // ECHOES the requested item time — our own frame-centre seek target
+    // (e.g. 2000/240000 for frame 0 at 60fps, our adapter's timescale).
+    // The same echo A-36 recorded under decoder failure is this
+    // configuration's NORMAL behavior, so the display time carries zero
+    // information about which frame the bytes are.
+    //
+    // Identity therefore comes from CONTENT: the fixture writes a distinct
+    // gray level per frame, and the export table is PTS-labeled by
+    // AVAssetReader (an asset-timescale source §5.6.1 lists as reliable),
+    // so a buffer's hash identifies its frame exactly. A stale vend is
+    // rejected and re-sought; bytes that match NO export frame are the
+    // real L2 signal and fail; a frame that never confirms fails loudly.
+    // Nothing is hashed into the comparison unidentified.
+    var frameForExportHash: [Data: Int] = [:]
+    for (frame, hash) in exportHashes {
+        if let duplicate = frameForExportHash[hash] {
+            check(false, "fixture content does not discriminate frames \(duplicate) and \(frame)")
+        }
+        frameForExportHash[hash] = frame
+    }
+
     var compared = 0
     var mismatches = 0
+    var rejectedStaleVends = 0
     for index in stride(from: 0, to: spec.frameCount, by: 1) {
-        await preciseSeek(player, to: CMTimeAdapter.cmTimeForSeek(toFrame: index, projectRate: spec.rate))
-        var previewHash: Data?
-        for _ in 0..<100 {
-            let t = player.currentTime()
-            if videoOutput.hasNewPixelBuffer(forItemTime: t),
-               let buffer = videoOutput.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil) {
-                previewHash = PixelBufferHash.hash(buffer)
-                break
+        enum PreviewOutcome {
+            case match
+            case divergent
+            case unconfirmed
+        }
+        var outcome = PreviewOutcome.unconfirmed
+        var seekAttempts = 0
+        attempts: while seekAttempts < 3 {
+            seekAttempts += 1
+            await preciseSeek(player, to: CMTimeAdapter.cmTimeForSeek(toFrame: index, projectRate: spec.rate))
+            for _ in 0..<100 {
+                let t = player.currentTime()
+                if videoOutput.hasNewPixelBuffer(forItemTime: t),
+                   let buffer = videoOutput.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil) {
+                    guard let bufferHash = PixelBufferHash.hash(buffer) else {
+                        // Unhashable vend (lock failure): consumed without
+                        // identification — same treatment as stale, retry.
+                        rejectedStaleVends += 1
+                        continue attempts
+                    }
+                    switch frameForExportHash[bufferHash] {
+                    case index:
+                        outcome = .match
+                        break attempts
+                    case .some:
+                        // A stale vend of a DIFFERENT frame. (A systematic
+                        // off-by-one compositor bug also lands here — and
+                        // exhausts the attempts into the loud unconfirmed
+                        // failure below, never a silent pass.)
+                        rejectedStaleVends += 1
+                        continue attempts
+                    case nil:
+                        // Bytes no export frame produced: the divergence
+                        // L2 exists to catch.
+                        outcome = .divergent
+                        break attempts
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 10_000_000)
             }
-            try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        guard let previewHash else {
-            check(false, "frame \(index): preview configuration produced no buffer")
-            continue
-        }
-        compared += 1
-        if previewHash != exportHashes[index] {
+        switch outcome {
+        case .match:
+            compared += 1
+        case .divergent:
+            compared += 1
             mismatches += 1
             if mismatches <= 3 {
-                print("  ✘ L2 mismatch at frame \(index)")
+                print("  ✘ L2 mismatch at frame \(index): preview bytes match no export frame")
             }
+        case .unconfirmed:
+            check(false, """
+            frame \(index): no buffer confirmed as frame \(index) after \
+            \(seekAttempts) seeks (stale vends so far: \(rejectedStaleVends))
+            """)
         }
     }
     check(mismatches == 0, "L2: \(mismatches)/\(compared) frames differ between configurations")
-    print("  L2: \(compared) frames compared, \(mismatches) mismatches")
+    print("  L2: \(compared) frames compared, \(mismatches) mismatches, \(rejectedStaleVends) stale vends rejected")
 
     // ---- Real-time: play and count distinct frames actually delivered.
     _ = PassthroughCompositor.snapshotAndResetStats()

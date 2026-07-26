@@ -61,6 +61,7 @@ targets:
     sources:
       - Tests
       - path: Sources/App/GyeolDocumentFile.swift
+      - path: Sources/App/G5OwnershipClassifier.swift
       - path: Sources/App/MediaResolver.swift
       - path: Sources/App/PlaybackController.swift
       - path: Sources/App/DocumentView.swift

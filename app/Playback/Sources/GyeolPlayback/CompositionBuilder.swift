@@ -176,11 +176,7 @@ public enum CompositionBuilder {
         }
         videoComposition.instructions = instructions
 
-        // GyeolPlayback sits outside GyeolCore, so the internal tick
-        // initializer is out of reach; the labeled exact path cannot fail
-        // for ticks that came FROM DocumentTime arithmetic.
-        let timelineEnd = DocumentTime(
-            exactly: try! RationalTime(value: timelineEndTicks, timescale: DocumentTime.timescale))!
+        let timelineEnd = DocumentTime(ticks: timelineEndTicks)
         return Built(
             composition: composition,
             videoComposition: videoComposition,

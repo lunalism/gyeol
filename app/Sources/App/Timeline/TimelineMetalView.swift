@@ -194,9 +194,7 @@ final class TimelineMetalView: MTKView {
     private func frame(atX x: CGFloat) -> Int {
         guard let projectRate else { return 0 }
         let ticks = viewport.ticks(atX: x)
-        let time = DocumentTime(
-            exactly: try! RationalTime(value: ticks, timescale: DocumentTime.timescale))!
-        return FrameMapping.frameIndex(at: time, rate: projectRate)
+        return FrameMapping.frameIndex(at: DocumentTime(ticks: ticks), rate: projectRate)
     }
 
     override var isFlipped: Bool { true }
