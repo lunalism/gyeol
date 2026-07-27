@@ -15,6 +15,18 @@ struct GyeolApp: App {
             EmptyView()
         }
         .commands {
+            // THE FULL DOCUMENT MENU, restored (M2.3 r2 task 1). G12
+            // replaced WindowGroup with a Settings scene + AppKit document
+            // windows, which silently discarded the document menu SwiftUI
+            // had been providing — D7 adopted NSDocument to NOT rebuild
+            // free machinery, and the missing menu was giving part of that
+            // back (⌘S did nothing for two milestones; round 1's undo
+            // routing was the first symptom, this is the full repair).
+            // All items route explicitly through currentDocument, same
+            // rationale as undo below: the SwiftUI scene is not in the
+            // document window's responder chain, so implicit routing
+            // cannot be trusted — explicit routing is verifiable, and
+            // --menu-probe verifies it.
             CommandGroup(replacing: .newItem) {
                 Button("새 프로젝트") {
                     NSDocumentController.shared.newDocument(nil)
@@ -25,11 +37,34 @@ struct GyeolApp: App {
                 }
                 .keyboardShortcut("o")
             }
+            CommandGroup(replacing: .saveItem) {
+                Button("닫기") {
+                    NSApp.keyWindow?.performClose(nil)
+                }
+                .keyboardShortcut("w")
+                Divider()
+                // The gate's self-test (§4 rule 1): --menu-gate-drop-save
+                // deliberately omits Save so --menu-probe can be SHOWN to
+                // fail. Compiled in, harmless in normal launches.
+                if !CommandLine.arguments.contains("--menu-gate-drop-save") {
+                    Button("저장") {
+                        NSDocumentController.shared.currentDocument?.save(nil)
+                    }
+                    .keyboardShortcut("s")
+                }
+                Button("다른 이름으로 저장…") {
+                    NSDocumentController.shared.currentDocument?.saveAs(nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("복제") {
+                    NSDocumentController.shared.currentDocument?.duplicate(nil)
+                }
+                Button("마지막 저장 상태로 되돌리기") {
+                    NSDocumentController.shared.currentDocument?.revertToSaved(nil)
+                }
+            }
             // Explicit ⌘Z/⇧⌘Z wired to the CURRENT DOCUMENT's undo manager
-            // (D27): the SwiftUI scene is not in the document window's
-            // responder chain, so the default undoRedo commands cannot be
-            // trusted to reach NSDocument's manager — explicit routing is
-            // verifiable, the default is not.
+            // (D27, round 1).
             CommandGroup(replacing: .undoRedo) {
                 Button("실행 취소") {
                     NSDocumentController.shared.currentDocument?.undoManager?.undo()
@@ -62,6 +97,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runG5Probe(documentAt: probeURL)
             return
         }
+        // M2.3 r2: --menu-probe asserts the document menu the user relies
+        // on actually EXISTS with a document open — nobody opened the File
+        // menu for two milestones and ⌘S silently did nothing (G12 gap).
+        // Same spirit as --g5-probe: the running app is the only place the
+        // real menu bar exists.
+        if CommandLine.arguments.contains("--menu-probe") {
+            NSApp.activate(ignoringOtherApps: true)
+            NSDocumentController.shared.newDocument(nil)
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                Self.runMenuProbe()
+            }
+            return
+        }
+        // M2.3 r2 task 6: --churn-probe <pkg> opens and closes the package
+        // ten times, sampling resident footprint and live-document count —
+        // the autosave-timer retention is system-owned (M2.2 doctrine),
+        // but ownership and RESOURCE CONSUMPTION are different questions,
+        // and on the 8GB floor (D3) a 48–92MB document accumulating per
+        // close would matter.
+        if let flag = CommandLine.arguments.firstIndex(of: "--churn-probe"),
+           CommandLine.arguments.indices.contains(flag + 1) {
+            let url = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+            NSApp.activate(ignoringOtherApps: true)
+            Task { @MainActor in
+                await Self.runChurnProbe(documentAt: url)
+                NSApp.terminate(nil)
+            }
+            return
+        }
         // M2.2 measurement harness — same rationale as --g5-probe: the
         // running app process is the only environment whose numbers count.
         if let probe = TimelineProbe.arguments() {
@@ -76,6 +141,128 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // opens an untitled one.
         if NSDocumentController.shared.documents.isEmpty {
             NSDocumentController.shared.newDocument(nil)
+        }
+    }
+
+    // MARK: - Churn probe (M2.3 r2 task 6)
+
+    private static func footprintMB() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return -1 }
+        return Double(info.phys_footprint) / 1_048_576
+    }
+
+    private static var churnSurvivors: [WeakDocumentBox] = []
+    final class WeakDocumentBox { weak var document: GyeolDocumentFile? }
+
+    private static func runChurnProbe(documentAt url: URL) async {
+        print(String(format: "CHURN: launch footprint %.1f MB", footprintMB()))
+        for cycle in 1...10 {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                NSDocumentController.shared.openDocument(
+                    withContentsOf: url, display: true
+                ) { document, _, error in
+                    guard let file = document as? GyeolDocumentFile else {
+                        print("CHURN: open failed: \(error.map(String.init(describing:)) ?? "?")")
+                        continuation.resume()
+                        return
+                    }
+                    let box = WeakDocumentBox()
+                    box.document = file
+                    churnSurvivors.append(box)
+                    Task { @MainActor in
+                        // Let load settle, then close — the real cycle.
+                        var waited = 0
+                        while file.playback.loadState == .loading || file.playback.loadState == .empty {
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            waited += 1
+                            if waited > 100 { break }
+                        }
+                        file.close()
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        continuation.resume()
+                    }
+                }
+            }
+            let alive = churnSurvivors.filter { $0.document != nil }.count
+            print(String(format: "CHURN: cycle %d — footprint %.1f MB, documents alive %d", cycle, footprintMB(), alive))
+        }
+        // Settle and final tally.
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        let alive = churnSurvivors.filter { $0.document != nil }.count
+        print(String(format: "CHURN: final — footprint %.1f MB, documents alive %d of 10", footprintMB(), alive))
+    }
+
+    // MARK: - Menu gate (M2.3 r2)
+
+    /// Walks the REAL menu bar and asserts every required document-menu
+    /// item exists, carries its key equivalent, and validates as enabled
+    /// with a document open. Exit 0 = PASS, 1 = FAIL (missing/disabled),
+    /// 2 = UNVERIFIED (menu bar absent — never a pass, §4 rule 6).
+    private static func runMenuProbe() {
+        struct Requirement {
+            let title: String
+            let key: String
+            let modifiers: NSEvent.ModifierFlags
+        }
+        let required: [Requirement] = [
+            .init(title: "새 프로젝트", key: "n", modifiers: [.command]),
+            .init(title: "열기…", key: "o", modifiers: [.command]),
+            .init(title: "닫기", key: "w", modifiers: [.command]),
+            .init(title: "저장", key: "s", modifiers: [.command]),
+            .init(title: "다른 이름으로 저장…", key: "s", modifiers: [.command, .shift]),
+            .init(title: "복제", key: "", modifiers: []),
+            .init(title: "마지막 저장 상태로 되돌리기", key: "", modifiers: []),
+            .init(title: "실행 취소", key: "z", modifiers: [.command]),
+            .init(title: "실행 복귀", key: "z", modifiers: [.command, .shift]),
+        ]
+        guard let mainMenu = NSApp.mainMenu else {
+            print("MENU-GATE: UNVERIFIED — no main menu in this environment")
+            exit(2)
+        }
+        var flat: [NSMenuItem] = []
+        func walk(_ menu: NSMenu) {
+            // update() runs menu validation so isEnabled is meaningful.
+            menu.update()
+            for item in menu.items {
+                flat.append(item)
+                if let submenu = item.submenu { walk(submenu) }
+            }
+        }
+        walk(mainMenu)
+        var failures: [String] = []
+        for requirement in required {
+            guard let item = flat.first(where: { $0.title == requirement.title }) else {
+                failures.append("missing: \(requirement.title)")
+                continue
+            }
+            if !requirement.key.isEmpty {
+                let mods = item.keyEquivalentModifierMask
+                if item.keyEquivalent.lowercased() != requirement.key || mods != requirement.modifiers {
+                    failures.append("wrong shortcut on \(requirement.title): '\(item.keyEquivalent)' \(mods)")
+                }
+            }
+            if !item.isEnabled {
+                failures.append("disabled with a document open: \(requirement.title)")
+            }
+            if item.action == nil {
+                failures.append("no action wired: \(requirement.title)")
+            }
+        }
+        if failures.isEmpty {
+            print("MENU-GATE: PASS — \(required.count) required items present, enabled, and wired")
+            exit(0)
+        } else {
+            failures.forEach { print("MENU-GATE: ✘ \($0)") }
+            print("MENU-GATE: FAIL — \(failures.count) problem(s)")
+            exit(1)
         }
     }
 

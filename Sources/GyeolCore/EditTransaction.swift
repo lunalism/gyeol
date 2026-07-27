@@ -212,6 +212,32 @@ public struct EditTransaction {
     }
 }
 
+#if DEBUG
+extension GyeolDocument {
+    /// TEST-ONLY, DEBUG-ONLY, public because the APP test bundle needs it:
+    /// a document violating the dangling-media invariant, constructed by
+    /// mutating `media` (which carries no didSet — the cross-FIELD
+    /// invariant is exactly the kind §5.6.7 says per-field guards cannot
+    /// close). The app's pre-save gate test uses this to prove the gate
+    /// can fail (§4 rule 1); no release code path can reach it.
+    public static func _danglingMediaDocumentForGateTests() -> GyeolDocument {
+        let mediaID = MediaID()
+        var document = GyeolDocument(
+            schemaVersion: .current,
+            settings: ProjectSettings(frameRate: .fps30, renderWidth: 1280, renderHeight: 720),
+            media: [mediaID: MediaReference(
+                relativePath: "x.mov", displayName: "x.mov",
+                duration: DocumentTime(ticks: 120_000))],
+            tracks: [Track(id: TrackID(), kind: .video, clips: [
+                Clip(id: ClipID(), timelineStart: .zero, duration: DocumentTime(ticks: 120_000),
+                     source: .media(MediaSource(mediaID: mediaID, sourceStart: .zero)))
+            ])])
+        document.media = [:]
+        return document
+    }
+}
+#endif
+
 extension GyeolDocument {
     /// Runs `body` as one editing transaction and returns the committed
     /// document. Pure: `self` is never mutated. One call = one commit =

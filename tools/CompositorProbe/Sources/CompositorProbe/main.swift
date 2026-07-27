@@ -259,8 +259,12 @@ for spec in activeSpecs {
             """)
         }
     }
-    check(mismatches == 0, "L2: \(mismatches)/\(compared) frames differ between configurations")
-    print("  L2: \(compared) frames compared, \(mismatches) mismatches, \(rejectedStaleVends) stale vends rejected")
+    check(mismatches == 0, "L2 (video only): \(mismatches)/\(compared) frames differ between configurations")
+    // VIDEO ONLY (§4 gate rule 4 — claim no more than is measured): this
+    // gate hashes VIDEO pixel buffers; from M2.3 the composition also
+    // carries audio and an AVAudioMix, and NOTHING here compares them. An
+    // audio equivalence gate is future work (see the M2.3 r2 report).
+    print("  L2 (video only): \(compared) frames compared, \(mismatches) mismatches, \(rejectedStaleVends) stale vends rejected")
 
     // ---- Real-time: play and count distinct frames actually delivered.
     _ = PassthroughCompositor.snapshotAndResetStats()

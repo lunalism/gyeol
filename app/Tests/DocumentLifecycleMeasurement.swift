@@ -42,7 +42,11 @@ import Testing
         weak var weakFile: GyeolDocumentFile?
         autoreleasepool {
             let file = GyeolDocumentFile()
-            file.applyEdit(.empty, actionName: "edit")
+            // A REAL change: applyEdit skips no-ops since r2, and this
+            // test needs the undo group to actually open.
+            var edited = GyeolDocument.empty
+            edited.markers = [Marker(id: MarkerID(), time: .zero, label: "m")]
+            file.applyEdit(edited, actionName: "edit")
             weakFile = file
             file.close()
         }

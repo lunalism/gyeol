@@ -11,6 +11,9 @@ public enum CompositionBuilder {
     public struct Built {
         public let composition: AVComposition
         public let videoComposition: AVVideoComposition
+        /// Volume and fades for every audible track (D31, M2.3 r2). nil
+        /// when the document contributes no audio at all.
+        public let audioMix: AVAudioMix?
         /// The end of the playable domain: the last clip's end across all
         /// video tracks (0 for an empty document).
         public let timelineEnd: DocumentTime
@@ -122,6 +125,83 @@ public enum CompositionBuilder {
             // from instruction parameters) is M4 work (§5.8).
         }
 
+        // ---- Audio (D31, M2.3 r2). VIDEO tracks contribute their source
+        // audio too: `Clip.AudioSettings` exists on every clip — the
+        // schema said so before the decision did — and the two audio
+        // tracks of the 3+2 layout are for ADDED sound, not source sound.
+        // A muted track is omitted from insertion entirely (document
+        // replacement rebuilds, so unmuting rebuilds it back in). A source
+        // with no audio track yields an empty load result — ABSENCE, not
+        // loss, so skipping it quietly is not a §7.4-6 violation.
+        var audioParameters: [AVMutableAudioMixInputParameters] = []
+        for track in document.tracks where !track.isMuted {
+            let mediaClips = track.clips.filter {
+                if case .media = $0.source { return true } else { return false }
+            }
+            guard !mediaClips.isEmpty else { continue }
+            guard let compositionTrack = composition.addMutableTrack(
+                withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                continue
+            }
+            let parameters = AVMutableAudioMixInputParameters(track: compositionTrack)
+            var trackHasAudio = false
+            for clip in mediaClips {
+                guard case .media(let source) = clip.source else { continue }
+                guard let url = mediaURLs[source.mediaID] else {
+                    throw BuildError.missingMediaURL(source.mediaID)
+                }
+                let asset = AVURLAsset(url: url)
+                guard let assetTrack = try await asset.loadTracks(withMediaType: .audio).first else {
+                    continue  // no audio in this source: absence
+                }
+                try compositionTrack.insertTimeRange(
+                    CMTimeRange(
+                        start: CMTimeAdapter.cmTime(exactly: source.sourceStart),
+                        duration: CMTimeAdapter.cmTime(exactly: clip.duration)),
+                    of: assetTrack,
+                    at: CMTimeAdapter.cmTime(exactly: clip.timelineStart))
+                trackHasAudio = true
+
+                // Volume: FixedPointScalar → Float OUTSIDE Core (§5.6.2 —
+                // the scalar stays storage-only; arithmetic is this
+                // layer's). Fades ramp over the clip's head and tail via
+                // the boundary adapter's exact conversion — no second
+                // rounding path (§5.6.1).
+                let volume = Float(Double(clip.audio.volume.rawValue) / Double(FixedPointScalar.scale))
+                let clipStart = CMTimeAdapter.cmTime(exactly: clip.timelineStart)
+                let clipEnd = CMTimeAdapter.cmTime(
+                    exactly: DocumentTime(ticks: clip.timelineStart.ticks + clip.duration.ticks))
+                parameters.setVolume(volume, at: clipStart)
+                if clip.audio.fadeIn.ticks > 0 {
+                    parameters.setVolumeRamp(
+                        fromStartVolume: 0, toEndVolume: volume,
+                        timeRange: CMTimeRange(
+                            start: clipStart,
+                            duration: CMTimeAdapter.cmTime(exactly: clip.audio.fadeIn)))
+                }
+                if clip.audio.fadeOut.ticks > 0 {
+                    let fadeStart = DocumentTime(
+                        ticks: clip.timelineStart.ticks + clip.duration.ticks - clip.audio.fadeOut.ticks)
+                    parameters.setVolumeRamp(
+                        fromStartVolume: volume, toEndVolume: 0,
+                        timeRange: CMTimeRange(
+                            start: CMTimeAdapter.cmTime(exactly: fadeStart),
+                            end: clipEnd))
+                }
+            }
+            if trackHasAudio {
+                audioParameters.append(parameters)
+            } else {
+                composition.removeTrack(compositionTrack)
+            }
+        }
+        let audioMix: AVAudioMix? = {
+            guard !audioParameters.isEmpty else { return nil }
+            let mix = AVMutableAudioMix()
+            mix.inputParameters = audioParameters
+            return mix
+        }()
+
         // The playable domain AUTHORITY is the document's stored duration
         // (validated by GyeolCore to be ≥ every clip end): frameCount and
         // stepping derive from `timelineEnd` below, so trailing space is
@@ -180,6 +260,7 @@ public enum CompositionBuilder {
         return Built(
             composition: composition,
             videoComposition: videoComposition,
+            audioMix: audioMix,
             timelineEnd: timelineEnd)
     }
 }

@@ -113,6 +113,22 @@ final class GyeolDocumentFile: NSDocument {
     // MARK: - Write
 
     override func fileWrapper(ofType typeName: String) throws -> FileWrapper {
+        // PRE-SAVE GATE (M2.3 r2): the FULL validator — the same function
+        // the decoder uses — runs before every write. Local commit
+        // validation is what protects release builds during editing; if it
+        // ever has a gap, the failure mode without this gate is the worst
+        // one: the file writes fine and then refuses to OPEN. Saving is
+        // not in the frame budget, so the O(n) scan is free here. Refusing
+        // names the invariant (§5.6.7's diagnostic rule, G7).
+        if let violation = GyeolDocument.fullValidationViolation(
+            media: document.media, tracks: document.tracks,
+            duration: document.duration,
+            subtitles: document.subtitles, markers: document.markers) {
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSLocalizedDescriptionKey: "이 문서는 저장할 수 없는 상태입니다 (저장하면 다시 열 수 없게 됩니다)",
+                NSLocalizedFailureReasonErrorKey: violation.message,
+            ])
+        }
         let body = try GyeolCoding.makeEncoder().encode(document)
         var children: [String: FileWrapper] = [
             Self.bodyFilename: FileWrapper(regularFileWithContents: body)
@@ -198,6 +214,13 @@ final class GyeolDocumentFile: NSDocument {
     /// `configureUndoManager`), so no run-loop grouping exists to blur it,
     /// and there is no coalescing policy by design.
     func applyEdit(_ newDocument: GyeolDocument, actionName: String) {
+        // No document change → no undo group (M2.3 r2, measured): round 1
+        // showed even an EMPTY manual group makes NSDocument schedule the
+        // autosave timer that retains a closed document. A no-op edit
+        // producing an undo step would also be wrong on its own terms
+        // (undoing it would do nothing visible). D27 is untouched — one
+        // REAL gesture is still one transaction is one undo step.
+        guard newDocument != document else { return }
         let previousDocument = document
         let previousSelection = selectedClip
         if let undoManager {

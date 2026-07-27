@@ -264,6 +264,34 @@ enum TimelineProbe {
             sharedSubtitles ? "YES" : "NO", after - before))
         _ = undoStack.count
 
+        // ---- Phase 4.6: Equatable cost (M2.3 r2 task 7). DocumentView
+        // binds `.task(id: file.document)`, so every SwiftUI body
+        // re-evaluation compares the whole document value; while playing,
+        // observable transport state (clockDisplay ~30Hz, displayOnlyFrame
+        // per drained frame) re-evaluates the body, so this comparison
+        // runs at roughly the playback tick rate.
+        do {
+            let identical = document
+            var oneClipChanged = document
+            if let heaviest = oneClipChanged.tracks.indices.max(
+                by: { oneClipChanged.tracks[$0].clips.count < oneClipChanged.tracks[$1].clips.count }) {
+                var clips = oneClipChanged.tracks[heaviest].clips
+                let middle = clips.count / 2
+                clips[middle].audio.volume = FixedPointScalar(rawValue: 9_999)
+                oneClipChanged.tracks[heaviest].clips = clips
+            }
+            var sink = 0
+            var start = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<10_000 where document == identical { sink += 1 }
+            let identicalUs = (CFAbsoluteTimeGetCurrent() - start) / 10_000 * 1_000_000
+            start = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<1_000 where document == oneClipChanged { sink += 1 }
+            let differingUs = (CFAbsoluteTimeGetCurrent() - start) / 1_000 * 1_000_000
+            print(String(
+                format: "M2.2-probe: Equatable — identical value %.3f µs/compare (storage identity), one-clip-diff %.1f µs/compare (deep walk to the difference); budget 8.3 ms (sink %d)",
+                identicalUs, differingUs, sink % 7))
+        }
+
         // ---- Phase 5: resident memory.
         print(String(
             format: "M2.2-probe: resident footprint %.1f MB (at launch %.1f MB); waveform tiles %d bytes",

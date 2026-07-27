@@ -163,6 +163,7 @@ final class PlaybackController {
             frameCount = FrameMapping.frameCount(for: built.timelineEnd, rate: rate)
             let item = AVPlayerItem(asset: built.composition)
             item.videoComposition = built.videoComposition
+            item.audioMix = built.audioMix
             // The video output exists for the stop handoff: it is the only
             // API that reports WHICH frame is displaying (a PTS — a
             // boundary time the adapter's snap is built for). currentTime()

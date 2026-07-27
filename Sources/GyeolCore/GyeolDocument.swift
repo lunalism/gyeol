@@ -147,21 +147,25 @@ public struct GyeolDocument: Hashable, Sendable {
 
     /// One cross-field/document-level violation, tagged with the field it
     /// belongs to so the decoder can throw with the right coding key.
-    struct ValidationViolation {
-        enum Field { case tracks, subtitles, markers, duration }
-        let field: Field
-        let message: String
+    public struct ValidationViolation {
+        public enum Field: Sendable { case tracks, subtitles, markers, duration }
+        public let field: Field
+        public let message: String
     }
 
     /// THE full-document validator (D26): init preconditions, the decoder,
-    /// and the edit transaction's debug cross-check all call THIS function.
-    /// A second implementation anywhere would be the encoder-duplication
-    /// failure §5.6.4 forbids — the cross-check could not detect its own
-    /// disagreement with decode.
+    /// the edit transaction's debug cross-check, and the app's pre-save
+    /// gate (M2.3 r2) all call THIS function. A second implementation
+    /// anywhere would be the encoder-duplication failure §5.6.4 forbids —
+    /// the cross-check could not detect its own disagreement with decode.
+    ///
+    /// Public since M2.3 r2: the SAVE gate lives in the app layer (the
+    /// document adapter owns the write path, §5.6.5) and must call the
+    /// same function, not a copy.
     ///
     /// Composed from the same per-collection helpers the child types use,
     /// so per-track decode validation and this one cannot drift either.
-    static func fullValidationViolation(
+    public static func fullValidationViolation(
         media: [MediaID: MediaReference],
         tracks: [Track],
         duration: DocumentTime,
