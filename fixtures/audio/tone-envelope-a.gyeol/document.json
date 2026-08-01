@@ -1,0 +1,76 @@
+{
+  "duration" : 3600000,
+  "markers" : [
+
+  ],
+  "media" : {
+    "AAAAAAAA-0000-4000-8000-000000000003" : {
+      "contentFingerprint" : {
+        "byteSize" : 2880044,
+        "value" : "k6ONlWd+C/IBjwZuLM//ie8X6EVJ8S42cbmXF6sJpUA="
+      },
+      "displayName" : "tone-envelope.wav",
+      "duration" : 3600000,
+      "relativePath" : "tone-envelope.wav"
+    }
+  },
+  "schemaVersion" : {
+    "major" : 1,
+    "minor" : 0
+  },
+  "settings" : {
+    "frameRate" : "30",
+    "renderHeight" : 1080,
+    "renderWidth" : 1920
+  },
+  "subtitleStyle" : {
+    "fontSize" : 500,
+    "outlineColor" : {
+      "alpha" : 255,
+      "blue" : 0,
+      "green" : 0,
+      "red" : 0
+    },
+    "outlineWidth" : 40,
+    "position" : {
+      "x" : 5000,
+      "y" : 9000
+    },
+    "textColor" : {
+      "alpha" : 255,
+      "blue" : 255,
+      "green" : 255,
+      "red" : 255
+    }
+  },
+  "subtitles" : [
+
+  ],
+  "tracks" : [
+    {
+      "clips" : [
+        {
+          "audio" : {
+            "fadeIn" : 0,
+            "fadeOut" : 0,
+            "volume" : 10000
+          },
+          "duration" : 3600000,
+          "effects" : [
+
+          ],
+          "id" : "CCCCCCCC-0000-4000-8000-000000000003",
+          "source" : {
+            "kind" : "media",
+            "mediaID" : "AAAAAAAA-0000-4000-8000-000000000003",
+            "sourceStart" : 0
+          },
+          "timelineStart" : 0
+        }
+      ],
+      "id" : "BBBBBBBB-0000-4000-8000-000000000003",
+      "isMuted" : false,
+      "kind" : "audio"
+    }
+  ]
+}

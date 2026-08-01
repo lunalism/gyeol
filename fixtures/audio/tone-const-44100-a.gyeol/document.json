@@ -1,0 +1,76 @@
+{
+  "duration" : 3600000,
+  "markers" : [
+
+  ],
+  "media" : {
+    "AAAAAAAA-0000-4000-8000-000000000002" : {
+      "contentFingerprint" : {
+        "byteSize" : 2646044,
+        "value" : "wZYK/VtU8Nv9ZeL3/rsZVOSNnyLuz6T6RSrmv2UdRis="
+      },
+      "displayName" : "tone-const-44100.wav",
+      "duration" : 3600000,
+      "relativePath" : "tone-const-44100.wav"
+    }
+  },
+  "schemaVersion" : {
+    "major" : 1,
+    "minor" : 0
+  },
+  "settings" : {
+    "frameRate" : "30",
+    "renderHeight" : 1080,
+    "renderWidth" : 1920
+  },
+  "subtitleStyle" : {
+    "fontSize" : 500,
+    "outlineColor" : {
+      "alpha" : 255,
+      "blue" : 0,
+      "green" : 0,
+      "red" : 0
+    },
+    "outlineWidth" : 40,
+    "position" : {
+      "x" : 5000,
+      "y" : 9000
+    },
+    "textColor" : {
+      "alpha" : 255,
+      "blue" : 255,
+      "green" : 255,
+      "red" : 255
+    }
+  },
+  "subtitles" : [
+
+  ],
+  "tracks" : [
+    {
+      "clips" : [
+        {
+          "audio" : {
+            "fadeIn" : 0,
+            "fadeOut" : 0,
+            "volume" : 10000
+          },
+          "duration" : 3600000,
+          "effects" : [
+
+          ],
+          "id" : "CCCCCCCC-0000-4000-8000-000000000002",
+          "source" : {
+            "kind" : "media",
+            "mediaID" : "AAAAAAAA-0000-4000-8000-000000000002",
+            "sourceStart" : 0
+          },
+          "timelineStart" : 0
+        }
+      ],
+      "id" : "BBBBBBBB-0000-4000-8000-000000000002",
+      "isMuted" : false,
+      "kind" : "audio"
+    }
+  ]
+}
