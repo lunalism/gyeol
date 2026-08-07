@@ -127,6 +127,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        // M2.3.1: --playhead-probe <pkg> [--playhead-offset N[,N…]]
+        // [--playhead-control-only] [--playhead-dwell S] [--playhead-blind].
+        // Same rationale as --g5-probe and --menu-probe — the running app is
+        // the only place the CADisplayLink exists. See runPlayheadProbe for
+        // the claim.
+        if let flag = CommandLine.arguments.firstIndex(of: "--playhead-probe"),
+           CommandLine.arguments.indices.contains(flag + 1) {
+            let url = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+            NSApp.activate(ignoringOtherApps: true)
+            Task { @MainActor in
+                await Self.runPlayheadProbe(
+                    documentAt: url,
+                    offsets: Self.playheadProbeOffsets(),
+                    dwell: Self.playheadProbeDwellSeconds(),
+                    controlOnly: CommandLine.arguments.contains("--playhead-control-only"),
+                    blind: CommandLine.arguments.contains("--playhead-blind"))
+            }
+            return
+        }
         // M2.2 measurement harness — same rationale as --g5-probe: the
         // running app process is the only environment whose numbers count.
         if let probe = TimelineProbe.arguments() {
@@ -142,6 +161,211 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if NSDocumentController.shared.documents.isEmpty {
             NSDocumentController.shared.newDocument(nil)
         }
+    }
+
+    // MARK: - Playhead probe (M2.3.1)
+
+    /// WHAT THIS PROBE CLAIMS — exactly two things, and nothing beyond them
+    /// (§4 rule 4):
+    ///
+    /// 1. **The display link drives the display-only update.** The probe
+    ///    never calls `pollDisplayedFrame()` itself; it only samples
+    ///    `timelinePlayheadFrame`, which is the very value
+    ///    `TimelineHostView` hands the renderer. Movement therefore came
+    ///    from the `CADisplayLink` tick and from nothing else.
+    /// 2. **The drawn index advances monotonically during playback.**
+    ///
+    /// IT DOES NOT CLAIM THE PLAYHEAD IS IN THE RIGHT PLACE. Nothing here
+    /// listens to anything, and a drawn index that advanced smoothly while
+    /// sitting a second away from the sound would pass every check below.
+    /// That question is M2.3.1's completion condition ②, it is a human
+    /// check, and `--playhead-offset` exists to give it a control rather
+    /// than to answer it.
+    ///
+    /// The committed index and the stop report are PRINTED, not claimed:
+    /// their agreement with the drawn index is gated by the app test suite
+    /// (`AudioOnlyPlayheadTests`, `DocumentPlaybackTests`), which can assert
+    /// it deterministically. This probe reaches the one thing those tests
+    /// structurally cannot: they call the polling function directly and
+    /// never build a `TimelineMetalView`, so they stay green with the
+    /// display link wire cut. `--playhead-gate-cut-link` demonstrates that.
+    ///
+    /// `--playhead-offset N` shifts the DRAWN playhead by N frames while
+    /// playing — display only; the commit path never reads the offset value
+    /// (see `PlaybackController.displayOffsetFrames`). Pass a comma list to
+    /// cycle values inside ONE uninterrupted playback: the person comparing
+    /// them back to back must not lose the audio reference between values.
+    ///
+    /// THE THREE HUMAN-SESSION FLAGS BELOW EXIST TO PROTECT THE JUDGEMENT,
+    /// and none of them is on by default — the permanent gate (§9 M2.3.1)
+    /// is what runs when they are absent.
+    ///
+    /// - `--playhead-control-only` skips the gate runs. The gate plays every
+    ///   offset three times WITH ITS VALUE PRINTED, which is a labelled
+    ///   preview of exactly the values the person must then judge blind.
+    ///   Skipping measures nothing, so this run reports SKIPPED, never PASS
+    ///   (§4 rule 4). It also forces the control session for a single
+    ///   offset, which the default path skips — otherwise the flag would
+    ///   leave nothing to run at all.
+    /// - `--playhead-dwell S` sets the seconds spent on each offset,
+    ///   default 3. Three seconds is roughly one envelope peak in
+    ///   `tone-envelope-a` and a judgement needs several.
+    /// - `--playhead-blind` withholds the offset value during the control
+    ///   session — each segment announces only its index — and prints the
+    ///   ordered list once the session is over. The person judges with the
+    ///   terminal hidden, so the printed markers are what lets written
+    ///   answers be aligned to segments afterwards; deferring the values to
+    ///   the end is what makes the pass blind, rather than trusting that
+    ///   the terminal stayed covered.
+    private static func playheadProbeOffsets() -> [Int] {
+        let args = CommandLine.arguments
+        guard let flag = args.firstIndex(of: "--playhead-offset"),
+              args.indices.contains(flag + 1) else { return [0] }
+        let parsed = args[flag + 1].split(separator: ",").compactMap { Int($0) }
+        return parsed.isEmpty ? [0] : parsed
+    }
+
+    /// Seconds per offset in the control session. A missing, unparseable or
+    /// non-positive value keeps the 3 s the session has always used.
+    private static func playheadProbeDwellSeconds() -> Double {
+        let args = CommandLine.arguments
+        guard let flag = args.firstIndex(of: "--playhead-dwell"),
+              args.indices.contains(flag + 1),
+              let parsed = Double(args[flag + 1]), parsed > 0 else { return 3 }
+        return parsed
+    }
+
+    private static func runPlayheadProbe(
+        documentAt url: URL,
+        offsets: [Int],
+        dwell: Double = 3,
+        controlOnly: Bool = false,
+        blind: Bool = false
+    ) async {
+        let file: GyeolDocumentFile? = await withCheckedContinuation { continuation in
+            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { doc, _, error in
+                if let error { print("PLAYHEAD: open failed: \(error)") }
+                continuation.resume(returning: doc as? GyeolDocumentFile)
+            }
+        }
+        guard let file, case let playback = file.playback else {
+            print("PLAYHEAD-GATE: FAIL — no document")
+            exit(1)
+        }
+        for _ in 0..<100 where playback.loadState != .ready {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard playback.loadState == .ready, playback.frameCount > 0 else {
+            print("PLAYHEAD-GATE: FAIL — document never became playable (\(playback.loadState))")
+            exit(1)
+        }
+        print("PLAYHEAD: \(url.lastPathComponent) rate=\(playback.projectRate?.rawValue ?? "?") frames=\(playback.frameCount) hasVideoTrack=\(playback.sessionHasVideoTrack)")
+
+        var failures: [String] = []
+        var committedByOffset: [Int: [Int]] = [:]
+
+        for offset in offsets where !controlOnly {
+            playback.displayOffsetFrames = offset
+            for run in 1...3 {
+                await playback.step(by: -playback.playheadFrame)
+                playback.togglePlayPause()
+                var drawn: [Int] = []
+                var offsetChecks: [Int] = []
+                for _ in 0..<10 {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    // Sampled in the same instant: the difference between
+                    // what the renderer draws and the raw display-only frame
+                    // must be exactly the injected offset, which is what
+                    // makes the offset provably display-side.
+                    drawn.append(playback.timelinePlayheadFrame)
+                    offsetChecks.append(playback.timelinePlayheadFrame - playback.displayOnlyFrame)
+                }
+                playback.togglePlayPause()
+                for _ in 0..<200 where playback.isPlaying {
+                    try? await Task.sleep(nanoseconds: 20_000_000)
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                committedByOffset[offset, default: []].append(playback.playheadFrame)
+
+                print("PLAYHEAD: offset=\(offset) run \(run) drawn@100ms=\(drawn) committed=\(playback.playheadFrame) drawnAfterStop=\(playback.timelinePlayheadFrame)")
+                print("PLAYHEAD: offset=\(offset) run \(run) stopReport=\(playback.lastStopReport ?? "nil")")
+
+                // Claim 1 — the link drove it. The probe called no polling.
+                if drawn.allSatisfy({ $0 == drawn[0] }) {
+                    failures.append("offset=\(offset) run \(run): drawn index never moved (\(drawn[0])) — the display link did not drive the update")
+                }
+                // Claim 2 — monotonic.
+                if drawn != drawn.sorted() {
+                    failures.append("offset=\(offset) run \(run): drawn index went backwards: \(drawn)")
+                }
+                // The offset is display-side and exact (clamping aside).
+                if offset != 0, let bad = offsetChecks.first(where: { $0 != offset && $0 != 0 }) {
+                    failures.append("offset=\(offset) run \(run): drawn − displayOnly was \(bad)")
+                }
+                // §7.4-8: after the handoff the drawn playhead is the
+                // committed one, offset or not. PRINTED as a claim only in
+                // the narrow sense that the offset must not survive a stop.
+                if playback.timelinePlayheadFrame != playback.playheadFrame {
+                    failures.append("offset=\(offset) run \(run): after stop drawn \(playback.timelinePlayheadFrame) ≠ committed \(playback.playheadFrame)")
+                }
+            }
+        }
+        playback.displayOffsetFrames = 0
+
+        // Skipped under --playhead-control-only: with no gate runs these
+        // lines carry empty lists AND name every offset before the blind
+        // session starts, which is the leak the flag exists to close.
+        for offset in offsets.sorted() where !controlOnly {
+            print("PLAYHEAD: committed indices at offset=\(offset): \(committedByOffset[offset] ?? [])")
+        }
+
+        // The human control session: ONE uninterrupted playback, cycling the
+        // offsets. Playback never restarts, so the waveform on screen and
+        // the sound in the room stay a fixed reference while only the drawn
+        // playhead moves. Switching costs one property write — no rebuild,
+        // no seek, no waveform reload — so every N is equally cheap.
+        if offsets.count > 1 || controlOnly {
+            print(String(format: "PLAYHEAD: control session — one continuous pass, %g s per offset", dwell))
+            await playback.step(by: -playback.playheadFrame)
+            playback.togglePlayPause()
+            for (segment, offset) in offsets.enumerated() {
+                playback.displayOffsetFrames = offset
+                if blind {
+                    // Index only. The drawn frame is omitted too: it is the
+                    // raw index PLUS the offset, so printing it hands over
+                    // the value this flag is withholding.
+                    print("PLAYHEAD: control segment \(segment + 1) started")
+                } else {
+                    print("PLAYHEAD: control offset=\(offset) now active (drawn=\(playback.timelinePlayheadFrame))")
+                }
+                try? await Task.sleep(nanoseconds: UInt64(dwell * 1_000_000_000))
+            }
+            playback.displayOffsetFrames = 0
+            playback.togglePlayPause()
+            for _ in 0..<200 where playback.isPlaying {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            // After the sound has stopped, never before.
+            if blind {
+                let key = offsets.enumerated().map { "\($0.offset + 1)=\($0.element)" }.joined(separator: " ")
+                print("PLAYHEAD: control segments in order — \(key)")
+            }
+        }
+
+        // Nothing was measured, so nothing is claimed — a PASS here would be
+        // the "green with no measurement" §4 warns about eight times.
+        if controlOnly {
+            print("PLAYHEAD-GATE: SKIPPED — --playhead-control-only, no gate runs; this run measured nothing")
+            exit(0)
+        }
+
+        if failures.isEmpty {
+            print("PLAYHEAD-GATE: PASS — display link drove the drawn index, monotonic, \(offsets.count * 3) runs")
+            exit(0)
+        }
+        failures.forEach { print("PLAYHEAD-GATE: ✘ \($0)") }
+        print("PLAYHEAD-GATE: FAIL — \(failures.count) problem(s)")
+        exit(1)
     }
 
     // MARK: - Churn probe (M2.3 r2 task 6)

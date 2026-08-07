@@ -99,9 +99,24 @@ struct DocumentView: View {
                     if let rate = playback.projectRate {
                         Text("\(rate.rawValue) fps")
                     }
-                    Text("frame \(playback.playheadFrame) / \(playback.frameCount)")
+                    // ONE clock (M2.3.1). Both of these read the same index:
+                    // `displayOnlyFrame` while playing, the authoritative
+                    // `playheadFrame` when stopped. The authoritative one is
+                    // deliberately NOT shown moving during playback — §7.4-8
+                    // freezes it and moving it would be the violation.
+                    Text("frame \(playback.timelinePlayheadFrame) / \(playback.frameCount)")
                         .monospacedDigit()
-                    Text(playback.clockDisplay).foregroundStyle(.secondary)
+                    Text(playback.timecodeDisplay)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                // A transport report is about a seek that has landed (or
+                // not); during playback there is no such thing, and showing
+                // the last one would put a stale second time on screen.
+                if !playback.isPlaying {
+                    Text(playback.transportReport)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if let report = playback.lastStopReport {
                     Text(report)

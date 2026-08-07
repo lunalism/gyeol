@@ -17,6 +17,17 @@ public enum CompositionBuilder {
         /// The end of the playable domain: the last clip's end across all
         /// video tracks (0 for an empty document).
         public let timelineEnd: DocumentTime
+        /// Whether the composition ACTUALLY carries a video track (D36,
+        /// §7.4-8). This is the structural condition that decides which
+        /// frame-evidence rule a playback session runs under, so it is a
+        /// FIELD rather than something callers ask the composition
+        /// themselves: left to the call site the question drifts into "does
+        /// the DOCUMENT have a video track", and that one is permanently
+        /// false — §5.2 fixes the layout at 3+2, so every document has three
+        /// video tracks even when all three are empty, and the rule would
+        /// never fire. Computed below from the composition, never from the
+        /// document.
+        public let hasVideoTrack: Bool
     }
 
     public enum BuildError: Error, CustomStringConvertible {
@@ -261,6 +272,10 @@ public enum CompositionBuilder {
             composition: composition,
             videoComposition: videoComposition,
             audioMix: audioMix,
-            timelineEnd: timelineEnd)
+            timelineEnd: timelineEnd,
+            // Asked of the composition itself, not inferred from the loop
+            // above: if a future path ever adds a video track elsewhere,
+            // this answer follows it instead of going stale.
+            hasVideoTrack: composition.tracks.contains { $0.mediaType == .video })
     }
 }

@@ -57,6 +57,14 @@ extension CMTimeAdapter.SnappedTime: CustomStringConvertible {
     }
 }
 
+/// Same shape as `SnappedTime`'s, minus the threshold clause — there is no
+/// threshold to report (see `ContainingFrame`).
+extension CMTimeAdapter.ContainingFrame: CustomStringConvertible {
+    public var description: String {
+        "frame \(frameIndex), \(residualTickNumerator)/\(residualTickDenominator) ticks into it"
+    }
+}
+
 extension CMTimeAdapter {
     /// Snaps `time` to the nearest frame boundary at `projectRate` and
     /// reports the discarded distance. Returns nil for non-numeric CMTime
@@ -112,6 +120,95 @@ extension CMTimeAdapter {
             exceedsQuarterFrameThreshold: exceeds)
     }
 
+    // MARK: - Direction 1b: CMTime → frame index, FLOOR
+
+    /// Which frame an incoming CMTime falls *inside*, plus how far into it.
+    ///
+    /// NO THRESHOLD AND NO COUNTER, deliberately — that is the whole
+    /// difference from `SnappedTime`. A floor residual is a NORMAL output,
+    /// uniformly distributed over `[0, one frame)`: an arbitrary instant
+    /// lands anywhere inside the frame that contains it, so "large residual"
+    /// carries no information. Attaching the ¼-frame threshold here would
+    /// fire on roughly three reads in four and turn §7.4-6's counter into
+    /// noise. The threshold is not wrong; the input's nature is different
+    /// (PRD §5.6.1 "세 번째 진입 함수", §7.4-8 / D36). The residual is
+    /// returned because the position inside the frame is real information —
+    /// M2.3.1's waveform/hearing comparison reads it — not because anything
+    /// should compare it against a limit.
+    public struct ContainingFrame: Hashable, Sendable {
+        /// The frame containing the incoming time: floor(t/d).
+        public let frameIndex: Int
+        /// That frame's start: exactly `frameIndex · d` ticks at 120000.
+        public let frameStart: DocumentTime
+        /// How far into the frame the incoming time sat, as an exact
+        /// fraction of one 120000 tick: `residualTickNumerator /
+        /// residualTickDenominator`. The denominator is the INCOMING
+        /// timescale, so the fraction is exact for any input — a Double
+        /// would defeat the point. Always in `[0, ticksPerFrame)`.
+        public let residualTickNumerator: Int64
+        public let residualTickDenominator: Int64
+    }
+
+    /// The frame CONTAINING `time` — floor, never nearest.
+    ///
+    /// The name says floor so the call site cannot confuse this with
+    /// `documentTime(snappingToFrameGrid:projectRate:)`. They answer
+    /// different questions:
+    ///
+    /// - `snappingToFrameGrid` — "this time is SUPPOSED to be a frame
+    ///   boundary; container quantization may have nudged it off, so pull
+    ///   it back and tell me how far it had moved."
+    /// - `frameIndexContaining` — "this time is an ARBITRARY instant; which
+    ///   frame is it inside?" (the item timebase of an audio-only session,
+    ///   D36).
+    ///
+    /// This does NOT create a second L1 mapping (§4.1). It is
+    /// `CMTime → DocumentTime (floor) → FrameMapping (floor)`, and the
+    /// composition is exact because frame boundaries fall exactly on the
+    /// 120000 tick grid: the coarse grid is aligned to the fine one, so
+    /// `floor∘floor = floor`. The same argument is why an input timescale
+    /// of 1e9 is harmless — 1e9 is not a multiple of 120000, so ns→ticks
+    /// (`ns × 3 / 25000`) is exact only at multiples of 25 µs, but what
+    /// flooring discards there is less than one tick and therefore cannot
+    /// carry the result across a frame boundary.
+    ///
+    /// Returns nil for non-numeric CMTime (AVPlayer reports these
+    /// transiently), for values whose ticks do not fit Int64, and for times
+    /// before zero. Negative input is REJECTED rather than trapped: this is
+    /// external runtime data, and §7.4-6 makes that a validation, not an
+    /// assertion.
+    public static func frameIndexContaining(
+        _ time: CMTime,
+        projectRate: FrameRate
+    ) -> ContainingFrame? {
+        guard time.isNumeric, time.timescale > 0 else { return nil }
+        let value = Int128(time.value)
+        let scale = Int128(time.timescale)
+        let d = Int128(projectRate.ticksPerFrame)
+        let exact = value * 120_000
+
+        // Step 1 — CMTime → DocumentTime, FLOORING. Int128 because
+        // value·120000 leaves Int64 for nanosecond-scale times.
+        let flooredTicks = floorDivide(exact, by: scale)
+        guard flooredTicks >= 0, let ticks = Int64(exactly: flooredTicks) else { return nil }
+
+        // Step 2 — the ONE mapping (§4.1). Not our own quotient: the
+        // adapter that could shortcut L1 is precisely where it must not.
+        let frameIndex = FrameMapping.frameIndex(
+            at: DocumentTime(ticks: ticks), rate: projectRate)
+
+        // The residual is measured against the ORIGINAL time, not against
+        // the floored ticks, so it stays exact and absorbs whatever step 1
+        // discarded: (t − N·d) ticks = (value·120000 − N·d·scale)/scale.
+        // |numerator| < d·scale ≤ 5005·2^31, comfortably Int64.
+        let residualNumerator = Int64(exact - Int128(frameIndex) * d * scale)
+        return ContainingFrame(
+            frameIndex: frameIndex,
+            frameStart: FrameMapping.time(ofFrame: frameIndex, rate: projectRate),
+            residualTickNumerator: residualNumerator,
+            residualTickDenominator: Int64(scale))
+    }
+
     // MARK: - Direction 2a: DocumentTime → CMTime, exact
 
     /// Lossless conversion for composition construction. No offset, no
@@ -150,6 +247,16 @@ extension CMTimeAdapter {
     /// Round-half-away-from-zero integer division; Swift's `/` truncates
     /// toward zero, which would bias snapping for values just under a
     /// half-frame on the negative side.
+    /// Floor division; Swift's `/` truncates toward zero, which for a
+    /// negative numerator would fold `(-scale, 0)` onto tick 0 and hide an
+    /// off-by-one exactly at the origin — the same reason `FrameMapping`
+    /// writes the floor rather than the quotient.
+    private static func floorDivide(_ numerator: Int128, by denominator: Int128) -> Int128 {
+        precondition(denominator > 0)
+        let quotient = numerator / denominator
+        return numerator % denominator < 0 ? quotient - 1 : quotient
+    }
+
     private static func roundedHalfAwayFromZero(_ numerator: Int128, dividedBy denominator: Int128) -> Int128 {
         precondition(denominator > 0)
         let quotient = numerator / denominator

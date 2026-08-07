@@ -39,8 +39,11 @@ private let audioFixtureNames = [
     "mute-one",
 ]
 
+/// Internal, not file-private: `AudioOnlyPlayheadTests` (M2.3.1) loads the
+/// same fixtures through the same resolver, and a second copy of this would
+/// be a second place for the fixture path to go stale.
 @MainActor
-private enum AudioFixtureLocation {
+enum AudioFixtureLocation {
     /// Repository root from this file's path: app/Tests/<file> → 3 up.
     static let repoRoot: URL = {
         var url = URL(fileURLWithPath: #filePath)
@@ -112,6 +115,23 @@ private enum AudioFixtureLocation {
         // No video track in an audio-only document, and therefore no
         // instructions: absence, not loss (§5.3).
         #expect(built.composition.tracks(withMediaType: .video).isEmpty)
+        // D36's structural flag (§7.4-8). Asserted against the composition
+        // as well as read from the field, so the two can never drift: the
+        // field is what callers branch on and the composition is the truth
+        // it must keep reporting.
+        #expect(!built.hasVideoTrack)
+        #expect(built.hasVideoTrack == !built.composition.tracks(withMediaType: .video).isEmpty)
+        // MEASURED, and it contradicts §7.4-8's stated premise (reported):
+        // that clause says a document "always has three video tracks" under
+        // the 3+2 layout, so a document-based test "would never fire". No
+        // document in this repository is like that — §5.2 puts 3+2 in the
+        // UI only and keeps the count OUT of the schema, `GyeolDocument
+        // .empty` has zero tracks, and these fixtures carry one audio track
+        // and nothing else. Computing the flag from the composition is
+        // still right, but for the opposite reason: a document with three
+        // EMPTY video tracks would answer "has video" and take a display
+        // PTS path that can never produce evidence.
+        #expect(document.tracks.allSatisfy { $0.kind == .audio })
     }
 
     /// `mute-one`'s 10–12 s gap must render as SILENCE in place, not as a

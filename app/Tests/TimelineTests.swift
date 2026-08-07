@@ -130,7 +130,7 @@ import Testing
     private func awaitScrubQuiescence(_ controller: PlaybackController, target: Int) async {
         // The pump serializes seeks; wait for the player to land. Bounded,
         // not timing-sensitive: each iteration yields to the pump task.
-        for _ in 0..<200 where controller.clockDisplay != "frame \(target)" {
+        for _ in 0..<200 where controller.transportReport != "frame \(target)" {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
     }
@@ -151,7 +151,7 @@ import Testing
         // Stopped: the timeline draws the authoritative playhead.
         #expect(controller.timelinePlayheadFrame == 42)
         await awaitScrubQuiescence(controller, target: 42)
-        #expect(controller.clockDisplay == "frame 42")
+        #expect(controller.transportReport == "frame 42")
         controller.shutdown()
     }
 
@@ -169,7 +169,7 @@ import Testing
         controller.endScrub()
         #expect(controller.playheadFrame == 59)
         await awaitScrubQuiescence(controller, target: 59)
-        #expect(controller.clockDisplay == "frame 59")
+        #expect(controller.transportReport == "frame 59")
         // 60 events → a handful of serialized seeks. The exact number is
         // scheduling-dependent; the CONTRACT is "far fewer than events".
         #expect(controller.scrubSeekCount < 30)

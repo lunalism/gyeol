@@ -267,7 +267,7 @@ enum TimelineProbe {
         // ---- Phase 4.6: Equatable cost (M2.3 r2 task 7). DocumentView
         // binds `.task(id: file.document)`, so every SwiftUI body
         // re-evaluation compares the whole document value; while playing,
-        // observable transport state (clockDisplay ~30Hz, displayOnlyFrame
+        // observable transport state (transportReport, displayOnlyFrame
         // per drained frame) re-evaluates the body, so this comparison
         // runs at roughly the playback tick rate.
         do {

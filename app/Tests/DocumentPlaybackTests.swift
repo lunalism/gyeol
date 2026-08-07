@@ -159,6 +159,9 @@ private struct MixedRateFixture {
 
         // …and the composition frames on the PROJECT grid: 1/30, not 1/24.
         #expect(built.videoComposition.frameDuration == CMTime(value: 1, timescale: 30))
+        // D36's structural flag, positive side: this composition HAS a
+        // video track, so the timebase rule must never open here.
+        #expect(built.hasVideoTrack)
         // The playable DOMAIN is the STORED duration (3 s) — trailing
         // space survives in the document and the transport domain. The
         // AVComposition itself ends at the content end (2.5 s): AVFoundation

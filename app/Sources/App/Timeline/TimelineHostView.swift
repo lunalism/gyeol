@@ -24,8 +24,17 @@ struct TimelineHostView: NSViewRepresentable {
         view.playheadFrameProvider = { [weak playback] in
             playback?.timelinePlayheadFrame ?? 0
         }
-        view.onPlaybackTick = { [weak playback] in
-            playback?.pollDisplayedFrame()
+        // The display link → controller wire. `--playhead-gate-cut-link` is
+        // the playhead gate's SELF-TEST (same role as `--menu-gate-drop-save`
+        // and `--g5-leak`): with this wire cut the display-only frame can
+        // never advance, and `--playhead-probe` must end in FAIL / exit 1.
+        // The app test suite stays GREEN with it cut — the tests call
+        // `pollDisplayedFrame()` themselves and never build this view, which
+        // is the whole reason the probe exists.
+        if !CommandLine.arguments.contains("--playhead-gate-cut-link") {
+            view.onPlaybackTick = { [weak playback] in
+                playback?.pollDisplayedFrame()
+            }
         }
         view.onScrubBegan = { [weak playback] in playback?.beginScrub() }
         view.onScrub = { [weak playback] frame in playback?.scrub(toFrame: frame) }
