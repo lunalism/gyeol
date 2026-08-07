@@ -37,6 +37,7 @@ private let audioFixtureNames = [
     "click-control",
     "click-control-weak",
     "mute-one",
+    "tone-envelope-long-a",
 ]
 
 /// Internal, not file-private: `AudioOnlyPlayheadTests` (M2.3.1) loads the

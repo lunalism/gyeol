@@ -25,8 +25,8 @@ import Testing
         #expect(tracks.count == 1)
 
         let duration = try await asset.load(.duration)
-        // Exactly 30 s, expressed in the asset's own timescale — no
-        // tolerance, because uncompressed PCM has no reason to be off.
+        // Exactly the spec's length, expressed in the asset's own timescale
+        // — no tolerance, because uncompressed PCM has no reason to be off.
         #expect(duration == CMTime(value: CMTimeValue(spec.sampleCount),
                                    timescale: CMTimeScale(spec.sampleRate)))
 

@@ -101,7 +101,39 @@ public enum AudioFixtures {
             ]
         })
 
-    public static let allSpecs = [toneConst, toneConst44100, toneEnvelope]
+    /// The SAME 6 s envelope period as `toneEnvelope`, thirty times over —
+    /// **180 s**. Only the length differs, so the peak pattern the person
+    /// judges is the same kind of thing and A-43's results stay comparable.
+    ///
+    /// WHY 180 s. `tone-envelope` is 30 s, and the M2.3.1 human session ran
+    /// twelve blind segments at twelve seconds each = **144 s**. The control
+    /// session never restarts playback (deliberately — the sound is the
+    /// fixed reference), so on a 30 s fixture everything after the third
+    /// segment was SILENCE with a frozen playhead, and the written
+    /// procedure told the person to guess rather than mark unknown. Only
+    /// the first pass — two values × 12 s = 24 s — stayed inside the
+    /// document. 180 s is 12 × 15 s: it holds the recorded 12 × 12 s
+    /// session with 36 s to spare and still fits a longer 15 s dwell
+    /// exactly.
+    ///
+    /// SIDE EFFECT WORTH KNOWING: at 48 kHz mono this file is ~16.5 MB, the
+    /// first fixture LARGER than the fingerprint's 4 MiB prefix (≈43.7 s of
+    /// audio). The stored fingerprint therefore no longer covers the whole
+    /// file, and the content gate has to reach past that boundary itself —
+    /// see `longEnvelopeIsExactlyPeriodicPastTheFingerprintPrefix`.
+    public static let toneEnvelopeLong = AudioMediaSpec(
+        fileName: "tone-envelope-long.wav",
+        sampleRate: 48_000,
+        segments: (0..<30).flatMap { _ in
+            [
+                ToneSegment(seconds: 2, amplitude: 0.5),
+                ToneSegment(seconds: 1, amplitude: 0),
+                ToneSegment(seconds: 2, amplitude: 0.125),
+                ToneSegment(seconds: 1, amplitude: 0),
+            ]
+        })
+
+    public static let allSpecs = [toneConst, toneConst44100, toneEnvelope, toneEnvelopeLong]
 
     // MARK: Writing
 
@@ -136,7 +168,7 @@ public enum AudioFixtures {
         return ContentFingerprint(value: Data(SHA256.hash(data: prefix)), byteSize: Int64(data.count))
     }
 
-    /// Writes the three media files and the six documents into `directory`.
+    /// Writes every media file and every document into `directory`.
     ///
     /// Media sits BESIDE the packages, not inside them: `MediaResolver`
     /// resolves `relativePath` against the package's PARENT directory.
@@ -223,10 +255,12 @@ extension AudioFixtures {
         let const = media[toneConst.fileName]!
         let const44 = media[toneConst44100.fileName]!
         let envelope = media[toneEnvelope.fileName]!
+        let envelopeLong = media[toneEnvelopeLong.fileName]!
 
         let constID = MediaID(rawValue: uuid("AAAAAAAA", 1))
         let const44ID = MediaID(rawValue: uuid("AAAAAAAA", 2))
         let envelopeID = MediaID(rawValue: uuid("AAAAAAAA", 3))
+        let envelopeLongID = MediaID(rawValue: uuid("AAAAAAAA", 4))
 
         let thirtySeconds = 30 * ticksPerSecond
 
@@ -341,6 +375,23 @@ extension AudioFixtures {
             ])],
             duration: DocumentTime(ticks: 22 * ticksPerSecond))
 
+        // G — ②'s LONG form, for the M2.3.1 human session's twelve-segment
+        // blind pass. Same shape as C (one clip, sourceStart 0, the drawn
+        // envelope must line up with the heard one); the only difference is
+        // that the document is 180 s, so a 12 × 12 s pass finishes with the
+        // playhead still inside the document and every segment still has
+        // sound under it. C stays as it is — the short form is right for a
+        // two-value pass and is what A-43's valid first pass used.
+        let oneEightySeconds = 180 * ticksPerSecond
+        let g = GyeolDocument(
+            schemaVersion: .current,
+            settings: settings(),
+            media: [envelopeLongID: reference(envelopeLong)],
+            tracks: [audioTrack(8, clips: [
+                clip(11, mediaID: envelopeLongID, timelineStart: 0, duration: oneEightySeconds),
+            ])],
+            duration: DocumentTime(ticks: oneEightySeconds))
+
         return [
             ("tone-const-a", a),
             ("tone-const-44100-a", b),
@@ -349,6 +400,7 @@ extension AudioFixtures {
             ("click-control", e),
             ("click-control-weak", eWeak),
             ("mute-one", f),
+            ("tone-envelope-long-a", g),
         ]
     }
 }

@@ -6,7 +6,7 @@ M2.3 봉인 시점에 **미판정**으로 남은 네 항목은 사람만 귀로 
 |#|확인 항목|픽스처|대조군|
 |---|---|---|---|
 |①|실제로 소리가 나는가|`tone-const-a`, `tone-const-44100-a`|없음 (소리 없음 자체가 실패)|
-|②|파형 엔벨로프와 청감이 일치하는가|`tone-envelope-a`|`envelope-shifted-control`|
+|②|파형 엔벨로프와 청감이 일치하는가|`tone-envelope-a` (짧은 패스) · `tone-envelope-long-a` (긴 블라인드 패스)|`envelope-shifted-control`|
 |③|절단점에 클릭·틱이 없는가|`tone-const-a` (이음매 없음)|`click-control` (강) + `click-control-weak` (약) — 쌍|
 |④|뮤트가 동작하는가|`mute-one` (한 문서 안에 양 분기)|없음 (같은 문서의 첫 클립이 대조)|
 
@@ -22,7 +22,8 @@ M2.3 봉인 시점에 **미판정**으로 남은 네 항목은 사람만 귀로 
 swift run --package-path tools/AudioFixtureGen audio-fixture-gen fixtures/audio
 ```
 
-`.wav` 세 개는 `.gitignore` 되어 있다 (개당 약 2.6~2.9MB).
+`.wav` 넷은 `.gitignore` 되어 있다 (짧은 셋은 개당 약 2.6~2.9MB,
+`tone-envelope-long.wav`는 약 16.5MB).
 생성기는 **바이트 단위로 결정론적**이고 그 사실이 게이트로 걸려 있으므로,
 재생성한 미디어는 커밋된 문서의 `contentFingerprint`와 그대로 일치한다.
 **문서는 커밋되어 있고 손으로 고치지 않는다** — 생성기가 유일한 저자다.
@@ -35,6 +36,7 @@ swift run --package-path tools/AudioFixtureGen audio-fixture-gen fixtures/audio
 |`tone-const.wav`|48000|30.000 s|1,440,000|2,880,044|220 Hz 사인, 진폭 0.5|
 |`tone-const-44100.wav`|44100|30.000 s|1,323,000|2,646,044|같은 신호, 44100 Hz|
 |`tone-envelope.wav`|48000|30.000 s|1,440,000|2,880,044|(2 s @0.5 · 1 s 무음 · 2 s @0.125 · 1 s 무음) × 5|
+|`tone-envelope-long.wav`|48000|180.000 s|8,640,000|17,280,044|같은 6 s 주기 × 30|
 
 전부 **비압축 16bit PCM 모노**다. AAC 같은 손실 압축은 세그먼트 경계를
 번지게 해서 자기 클릭을 만들고, 사람은 그것을 우리 분할 코드의 탓으로
@@ -52,7 +54,7 @@ swift run --package-path tools/AudioFixtureGen audio-fixture-gen fixtures/audio
 
 ---
 
-## 문서 일곱
+## 문서 여덟
 
 모두 프로젝트 타임스케일 120000, 시간은 전부 맨 정수 틱, 30fps · 1920×1080.
 
@@ -76,6 +78,30 @@ A와 같은 모양, 미디어만 44100 Hz.
 6 s 주기로 5회. **타임라인에 그려진 파형의 큰 덩어리·작은 덩어리·빈 칸이
 들리는 것과 초 단위로 일치해야 한다.** 두 톤은 12 dB 차이라서 그리기
 반올림 오차로는 설명되지 않는다.
+
+### C-long. `tone-envelope-long-a` — ②의 **긴 블라인드 패스용**
+
+C와 **같은 모양**이다. 클립 하나, `sourceStart` 0, 같은 6 s 주기(2 s @0.5 /
+1 s 무음 / 2 s @0.125 / 1 s 무음). **다른 것은 길이뿐으로 30회 반복해 180 s다.**
+판정 대상이 같은 종류의 봉우리 패턴이므로 부록 A-43의 숫자와 비교 가능하다.
+
+**왜 만들었나 — M2.3.1 사람 세션이 무효였다.**
+컨트롤 세션은 재생을 다시 시작하지 않는다(소리를 고정 기준으로 두기 위한
+설계다). 그런데 그 세션은 **12구간 × 12초 = 144초**를 **30초** 픽스처에서
+돌렸다. 따라서 **3번째 구간 이후는 전부 무음이고 재생헤드는 얼어 있었으며**,
+절차서가 "모르겠으면 찍어라"라고 되어 있었기 때문에 사람은 그 구간들에도
+답을 적었다. **문서 안에 머문 것은 첫 패스(2값 × 12초 = 24초)뿐이다.**
+
+**왜 180초인가.** 12 × 15 s다. 기록된 12 × 12 s = 144 s 세션이 **36초 여유를
+두고** 들어가고, 구간당 15초까지 늘려도 정확히 맞는다.
+
+**부수 효과 — 이 픽스처가 4 MiB 접두를 넘는 첫 파일이다.** 16.5 MB이고
+fingerprint는 앞 4 MiB(≈43.7초)만 덮는다. **따라서 커밋된 지문은 이 파일의
+4분의 3을 보지 못하며**, 그 구간을 검사하는 것은 아래 내용 게이트 하나뿐이다.
+
+**프로브가 이제 이 실수를 거절한다.** `--playhead-probe`는 컨트롤 세션 길이가
+문서 길이를 넘으면 실행을 거부한다(exit 2). 경고가 아니라 거절인 이유는
+**경고였다면 위 세션이 그대로 돌았을 것**이기 때문이다.
 
 ### D. `envelope-shifted-control` — ②의 **음성 대조군**
 
@@ -182,12 +208,15 @@ swift test --package-path tools/AudioFixtureGen
 
 |게이트|재는 것|
 |---|---|
-|`decodesAndValidates`|커밋된 문서 일곱이 전부 디코드되고 전체 검증(D26)을 통과한다|
+|`decodesAndValidates`|커밋된 문서 여덟이 전부 디코드되고 전체 검증(D26)을 통과한다|
 |`carriesAudioClips`|비지 않았고 모든 클립이 미디어 풀을 가리킨다 (자명한 통과 방지)|
 |`committedDocumentsMatchRegeneration`|커밋된 JSON == 생성기 출력. 손편집·드리프트 차단|
 |`mediaIsByteIdenticalAcrossRuns`|서로 다른 디렉터리로 두 번 생성한 미디어의 SHA-256이 같다|
 |`regeneratedMediaMatchesCommittedFingerprints`|재생성한 미디어가 커밋된 문서의 fingerprint를 만족한다|
 |`phaseSurvivesSilentSegments`|무음을 건너뛴 톤이 끊김 없는 톤과 샘플 단위로 같다|
+|`longEnvelopeRepeatsTheSameSixSecondPeriod`|긴 픽스처의 **첫 주기와 마지막 주기**가 짧은 것과 같은 봉우리 패턴이다 (A-43과의 비교 가능성)|
+|`longEnvelopeIsExactlyPeriodicPastTheFingerprintPrefix`|**4 MiB 접두 밖 전 구간의 내용 게이트.** 주기 1~29를 주기 0과 샘플 단위로 비교해 8,640,000 샘플을 전부 덮는다|
+|`longEnvelopePhaseHoldsAtTheEnd`|180 s = 39,600 주기, 174 s 지점이 여전히 영교차 — 누산기가 끝까지 드리프트하지 않는다|
 |`fileSpansWholePeriods` / `envelopeSegmentAmplitudes` / `phaseOffsetsAreExactlyReported`|신호 명세 자체|
 |`avFoundationOpensGeneratedMedia`|AVFoundation이 실제로 연다 — 청취 세션이 시작도 못 하고 낭비되는 것을 막는다|
 
@@ -220,12 +249,36 @@ xcodebuild test -project app/Gyeol.xcodeproj -scheme Gyeol -destination 'platfor
   게이트가 빨강. 결정론 게이트가 내용 게이트를 겸하지 않는다는 것도 함께
   관찰된 셈이다 (§4 규칙 4 — 재는 것보다 넓게 주장하지 않는다).
 
+**긴 픽스처에서 양방향을 다시 돌렸다 (§4 규칙 7).** 세 번이며, 세 번째가
+이 파일에만 있는 새 사실이다. 섭동 위치는 `ToneSignal.samples`이고
+길이가 8,640,000일 때만 발동시켜 긴 파일만 건드렸다.
+
+|섭동|결정론 게이트|fingerprint 게이트|내용 게이트|
+|---|---|---|---|
+|A. 비결정적, 샘플 7,000,000 (접두 **밖**)|**빨강**|초록|**빨강**|
+|B. 결정적 +1, 샘플 1,000,000 (접두 **안**, t=20.8 s)|초록|**빨강**|**빨강**|
+|C. 결정적 +1, 샘플 7,000,000 (접두 **밖**, t=145.8 s)|초록|**초록**|**빨강**|
+
+**C가 이 픽스처에만 있는 사실이다.** 4 MiB 접두 밖의 결정적 변조는
+**fingerprint 게이트가 구조적으로 볼 수 없고**, 잡는 것은
+`longEnvelopeIsExactlyPeriodicPastTheFingerprintPrefix` 하나뿐이다. 짧은
+픽스처 셋에서는 파일이 접두보다 작아 이 방향이 존재하지 않았다.
+
+**A는 처음에 초록이 나왔고 그것이 실험 설계 결함이었다.** 난수를 `1...9`에서
+뽑았기 때문에 두 실행이 같은 값을 뽑을 확률이 1/9였고 실제로 그렇게 됐다.
+나노초 클럭으로 바꿔 두 실행이 반드시 다르게 만든 뒤에야 빨강이 나왔다.
+**"섭동을 넣었는데 초록"은 게이트가 튼튼하다는 뜻이 아니라 섭동을 확인해야
+한다는 뜻이다** — §4 규칙 8이 대조군에 대해 말하는 것과 같은 형태다.
+
 ## 알려진 공백
 
 - **fingerprint 알고리즘(4 MiB 프리픽스 + 바이트 크기)이 `MediaResolver`에서
   복사되어 있다.** `MediaResolver`는 앱 타깃 파일이라 도구가 import할 수 없고,
   `tools/FixtureGen`도 이미 같은 사본을 갖고 있다. 알고리즘이 바뀌면 커밋된
   픽스처 전부가 안 열리며, 고칠 곳 중 하나가 여기다.
-- 이 세 파일은 전부 4 MiB보다 작으므로 fingerprint가 **파일 전체**를 덮는다.
-  프리픽스 절단은 이 픽스처에서 발현하지 않는다.
+- **짧은 세 파일은 4 MiB보다 작으므로 fingerprint가 파일 전체를 덮는다.
+  `tone-envelope-long.wav`는 아니다** — 16.5MB이므로 지문은 앞 4 MiB(≈43.7초)
+  까지이고 나머지 4분의 3은 지문 밖이다. 그 구간을 덮는 것은
+  `longEnvelopeIsExactlyPeriodicPastTheFingerprintPrefix` 하나뿐이며,
+  섭동 C가 그것을 실증한다. **프리픽스 절단이 발현하는 첫 픽스처다.**
 - **G(`tone-video`, D31의 소비자)는 만들지 않았다.** 사유는 세션 보고 참조.

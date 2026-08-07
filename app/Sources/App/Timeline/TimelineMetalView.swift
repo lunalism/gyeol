@@ -85,6 +85,61 @@ final class TimelineMetalView: MTKView {
         }
     }
 
+    // MARK: - Deterministic zoom (부록 A-43 ①)
+
+    /// The outcome of a `--playhead-span` request. There is no `clamped`
+    /// case ON PURPOSE: the zoom is a MEASUREMENT CONDITION for the
+    /// waveform-against-hearing check (A-43 ①), and a silently clamped
+    /// span is a condition the session log would report as the requested
+    /// one while the screen showed something else. The probe refuses.
+    enum SpanOutcome {
+        case applied(ticksPerPoint: Double, widthPoints: Double)
+        /// The view has not been laid out yet — nothing to divide by.
+        case widthUnavailable
+        /// The span is outside what `TimelineViewport`'s zoom limits allow
+        /// at this width; the attainable range comes back so the refusal
+        /// can name it.
+        case unattainable(widthPoints: Double, minSeconds: Double, maxSeconds: Double)
+    }
+
+    /// Sets the visible time window to exactly `seconds`, anchored at the
+    /// document origin.
+    ///
+    /// Expressed as a SPAN and not as ticks-per-point because the span is
+    /// what the person can check against the ruler; ticks/point is an
+    /// internal scale factor nobody can verify by looking.
+    /// The arithmetic lives on `TimelineViewport` (a pure value type the
+    /// test target can reach without a Metal device); this method is the
+    /// view-state half — read the width, apply, mark dirty.
+    func setVisibleSpan(seconds: Double) -> SpanOutcome {
+        let width = Double(bounds.width)
+        guard width > 0 else { return .widthUnavailable }
+        guard let ticksPerPoint = TimelineViewport.ticksPerPoint(
+            forSpanSeconds: seconds, width: width) else {
+            let attainable = TimelineViewport.attainableSpanSeconds(width: width)
+            return .unattainable(
+                widthPoints: width,
+                minSeconds: attainable.lowerBound,
+                maxSeconds: attainable.upperBound)
+        }
+        viewport.ticksPerPoint = ticksPerPoint
+        viewport.visibleStartTicks = 0
+        needsDisplay = true
+        return .applied(ticksPerPoint: ticksPerPoint, widthPoints: width)
+    }
+
+    /// The span currently on screen. Reported by the playhead probe whether
+    /// or not `--playhead-span` was given, so a session log always states
+    /// its own screen condition — A-43 ① was invisible precisely because
+    /// the log did not.
+    func currentVisibleSpan() -> (seconds: Double, widthPoints: Double, ticksPerPoint: Double)? {
+        let width = Double(bounds.width)
+        guard width > 0 else { return nil }
+        return (TimelineViewport.spanSeconds(
+                    ticksPerPoint: viewport.ticksPerPoint, width: width),
+                width, viewport.ticksPerPoint)
+    }
+
     // MARK: - Host inputs
 
     func apply(document: GyeolDocument, mediaURLs: [MediaID: URL], isPlaying: Bool) {

@@ -82,27 +82,38 @@ struct GyeolApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // G5 ground truth (M2.1 task 2): `--g5-probe <path>` runs the real
-        // open → close cycle in the real app process and prints a lifetime
-        // table, because the headless measurement and the GUI memory graph
-        // disagreed and only the app itself can arbitrate.
-        if let probeURL = Self.g5ProbeURL() {
-            // Launched from a shell the app is not activated, the document
-            // window never actually appears, and the probe silently
-            // measures the A-36 headless artifact instead of the app
-            // (reproduced in M2.2: an un-activated baseline HEAD reports
-            // ALIVE at t≈3s). Activation restores the probe's documented
-            // precondition — a window that is really on screen.
-            NSApp.activate(ignoringOtherApps: true)
-            runG5Probe(documentAt: probeURL)
+        // ONE strict parse for every probe, before anything is opened
+        // (부록 A-43 ②). The old per-flag readers each had their own
+        // fallback; this branch has none.
+        switch ProbeArguments.parse(CommandLine.arguments) {
+        case .notAProbe:
+            break  // normal launch, below — not in scope
+        case .refused(let reasons):
+            reasons.forEach { print("PROBE-ARGS: ✘ \($0)") }
+            print("PROBE-ARGS: UNVERIFIED — invocation refused, \(reasons.count) problem(s); no document opened, nothing played (§4 rule 6)")
+            exit(2)
+        case .probe(let invocation):
+            run(invocation)
             return
         }
-        // M2.3 r2: --menu-probe asserts the document menu the user relies
-        // on actually EXISTS with a document open — nobody opened the File
-        // menu for two milestones and ⌘S silently did nothing (G12 gap).
-        // Same spirit as --g5-probe: the running app is the only place the
-        // real menu bar exists.
-        if CommandLine.arguments.contains("--menu-probe") {
+        // The AppKit document lifecycle would do this on its own; under the
+        // SwiftUI lifecycle it is explicit: launching without a document
+        // opens an untitled one.
+        if NSDocumentController.shared.documents.isEmpty {
+            NSDocumentController.shared.newDocument(nil)
+        }
+    }
+
+    private func run(_ invocation: ProbeArguments.Invocation) {
+        // --menu-probe is the one mode with no document argument: it opens
+        // an untitled one itself.
+        //
+        // M2.3 r2: it asserts the document menu the user relies on actually
+        // EXISTS with a document open — nobody opened the File menu for two
+        // milestones and ⌘S silently did nothing (G12 gap). Same spirit as
+        // --g5-probe: the running app is the only place the real menu bar
+        // exists.
+        if invocation.mode == .menu {
             NSApp.activate(ignoringOtherApps: true)
             NSDocumentController.shared.newDocument(nil)
             Task { @MainActor in
@@ -111,55 +122,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        // Structurally guaranteed by the parser — a mode with no path is
+        // refused there. Re-checked so a later flag cannot quietly turn
+        // that guarantee into a crash inside a diagnostic tool.
+        guard let path = invocation.path else {
+            print("PROBE-ARGS: ✘ \(invocation.mode.rawValue) reached the runner with no path")
+            print("PROBE-ARGS: UNVERIFIED — invocation refused, 1 problem(s); no document opened, nothing played (§4 rule 6)")
+            exit(2)
+        }
+        switch invocation.mode {
+        case .menu:
+            break  // returned above
+        // G5 ground truth (M2.1 task 2): `--g5-probe <path>` runs the real
+        // open → close cycle in the real app process and prints a lifetime
+        // table, because the headless measurement and the GUI memory graph
+        // disagreed and only the app itself can arbitrate.
+        case .g5:
+            // Launched from a shell the app is not activated, the document
+            // window never actually appears, and the probe silently
+            // measures the A-36 headless artifact instead of the app
+            // (reproduced in M2.2: an un-activated baseline HEAD reports
+            // ALIVE at t≈3s). Activation restores the probe's documented
+            // precondition — a window that is really on screen.
+            NSApp.activate(ignoringOtherApps: true)
+            runG5Probe(documentAt: path)
         // M2.3 r2 task 6: --churn-probe <pkg> opens and closes the package
         // ten times, sampling resident footprint and live-document count —
         // the autosave-timer retention is system-owned (M2.2 doctrine),
         // but ownership and RESOURCE CONSUMPTION are different questions,
         // and on the 8GB floor (D3) a 48–92MB document accumulating per
         // close would matter.
-        if let flag = CommandLine.arguments.firstIndex(of: "--churn-probe"),
-           CommandLine.arguments.indices.contains(flag + 1) {
-            let url = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+        case .churn:
             NSApp.activate(ignoringOtherApps: true)
             Task { @MainActor in
-                await Self.runChurnProbe(documentAt: url)
+                await Self.runChurnProbe(documentAt: path)
                 NSApp.terminate(nil)
             }
-            return
-        }
         // M2.3.1: --playhead-probe <pkg> [--playhead-offset N[,N…]]
-        // [--playhead-control-only] [--playhead-dwell S] [--playhead-blind].
-        // Same rationale as --g5-probe and --menu-probe — the running app is
-        // the only place the CADisplayLink exists. See runPlayheadProbe for
-        // the claim.
-        if let flag = CommandLine.arguments.firstIndex(of: "--playhead-probe"),
-           CommandLine.arguments.indices.contains(flag + 1) {
-            let url = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+        // [--playhead-control-only] [--playhead-dwell S] [--playhead-blind]
+        // [--playhead-span S]. Same rationale as --g5-probe and
+        // --menu-probe — the running app is the only place the CADisplayLink
+        // exists. See runPlayheadProbe for the claim.
+        case .playhead:
             NSApp.activate(ignoringOtherApps: true)
             Task { @MainActor in
                 await Self.runPlayheadProbe(
-                    documentAt: url,
-                    offsets: Self.playheadProbeOffsets(),
-                    dwell: Self.playheadProbeDwellSeconds(),
-                    controlOnly: CommandLine.arguments.contains("--playhead-control-only"),
-                    blind: CommandLine.arguments.contains("--playhead-blind"))
+                    documentAt: path,
+                    offsets: invocation.offsets ?? [0],
+                    dwell: invocation.dwellSeconds,
+                    spanSeconds: invocation.spanSeconds,
+                    controlOnly: invocation.controlOnly,
+                    blind: invocation.blind)
             }
-            return
-        }
         // M2.2 measurement harness — same rationale as --g5-probe: the
         // running app process is the only environment whose numbers count.
-        if let probe = TimelineProbe.arguments() {
+        case .timeline:
             Task { @MainActor in
-                await TimelineProbe.run(packageURL: probe.packageURL, minutes: probe.minutes)
+                await TimelineProbe.run(
+                    packageURL: path,
+                    minutes: invocation.minutes,
+                    dumpDirectory: invocation.dumpDirectory)
                 NSApp.terminate(nil)
             }
-            return
-        }
-        // The AppKit document lifecycle would do this on its own; under the
-        // SwiftUI lifecycle it is explicit: launching without a document
-        // opens an untitled one.
-        if NSDocumentController.shared.documents.isEmpty {
-            NSDocumentController.shared.newDocument(nil)
         }
     }
 
@@ -217,28 +241,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   answers be aligned to segments afterwards; deferring the values to
     ///   the end is what makes the pass blind, rather than trusting that
     ///   the terminal stayed covered.
-    private static func playheadProbeOffsets() -> [Int] {
-        let args = CommandLine.arguments
-        guard let flag = args.firstIndex(of: "--playhead-offset"),
-              args.indices.contains(flag + 1) else { return [0] }
-        let parsed = args[flag + 1].split(separator: ",").compactMap { Int($0) }
-        return parsed.isEmpty ? [0] : parsed
-    }
-
-    /// Seconds per offset in the control session. A missing, unparseable or
-    /// non-positive value keeps the 3 s the session has always used.
-    private static func playheadProbeDwellSeconds() -> Double {
-        let args = CommandLine.arguments
-        guard let flag = args.firstIndex(of: "--playhead-dwell"),
-              args.indices.contains(flag + 1),
-              let parsed = Double(args[flag + 1]), parsed > 0 else { return 3 }
-        return parsed
-    }
-
+    /// - `--playhead-span S` fixes the visible time window to S seconds
+    ///   (부록 A-43 ①). **The zoom is a measurement condition**: the check
+    ///   happens on screen, and the default zoom drew the 30 s fixture
+    ///   across a four-minute width, where a 400 ms offset is a few pixels.
+    ///   Without this the last session zoomed by hand before each pass, so
+    ///   the passes were not held at the same zoom. The span, not an
+    ///   internal scale factor, is what the person can check against the
+    ///   ruler. It is REPORTED whether or not it was requested — a session
+    ///   log has to state its own measurement condition — and a span that
+    ///   cannot be satisfied is refused, never clamped.
+    ///
+    /// Every argument above is parsed by `ProbeArguments`, which refuses
+    /// rather than falling back (부록 A-43 ②).
     private static func runPlayheadProbe(
         documentAt url: URL,
         offsets: [Int],
         dwell: Double = 3,
+        spanSeconds: Double? = nil,
         controlOnly: Bool = false,
         blind: Bool = false
     ) async {
@@ -259,7 +279,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("PLAYHEAD-GATE: FAIL — document never became playable (\(playback.loadState))")
             exit(1)
         }
-        print("PLAYHEAD: \(url.lastPathComponent) rate=\(playback.projectRate?.rawValue ?? "?") frames=\(playback.frameCount) hasVideoTrack=\(playback.sessionHasVideoTrack)")
+        // ---- The refusals that needed the document. The RULES are pure and
+        // live in `ProbeArguments` beside the argv ones (and are tested
+        // there); what happens here is printing and exiting.
+        let rate = playback.projectRate
+        let documentSeconds = rate.map {
+            Double(FrameMapping.time(ofFrame: playback.frameCount, rate: $0).ticks)
+                / Double(DocumentTime.timescale)
+        } ?? 0
+        func refuse(_ reason: String) -> Never {
+            print("PROBE-ARGS: ✘ \(reason)")
+            print("PROBE-ARGS: UNVERIFIED — invocation refused, 1 problem(s); nothing played (§4 rule 6)")
+            exit(2)
+        }
+        if let reason = ProbeArguments.offsetsFitDocument(
+            offsets: offsets, frameCount: playback.frameCount) {
+            refuse(reason)
+        }
+        if let reason = ProbeArguments.controlSessionFitsDocument(
+            offsets: offsets, dwellSeconds: dwell, controlOnly: controlOnly,
+            documentSeconds: documentSeconds) {
+            refuse(reason)
+        }
+
+        // ---- Zoom, the measurement condition (부록 A-43 ①). Nothing scrolls
+        // the timeline to follow the playhead (there is no auto-follow —
+        // §5.2 draws only what the viewport asks for), so a span narrower
+        // than what this run DRAWS would run the playhead off screen
+        // mid-pass and the person would be judging a blank strip.
+        let requiredSpan = ProbeArguments.requiredSpan(
+            offsets: offsets, dwellSeconds: dwell, controlOnly: controlOnly,
+            documentSeconds: documentSeconds, rate: rate)
+        // POLLED, not sampled once: the document can reach `.ready` before
+        // SwiftUI has built and laid out the window, and a single early
+        // lookup reported "no timeline view" on runs whose zoom was in fact
+        // perfectly ordinary — an unreadable measurement condition, which
+        // is the thing being fixed, not a way to fix it.
+        var timeline: TimelineMetalView?
+        for _ in 0..<40 {
+            if let found = Self.timelineView(), found.bounds.width > 0 {
+                timeline = found
+                break
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        var spanReport = "span=UNREPORTED (no laid-out timeline view found)"
+        if let timeline {
+            if let requested = spanSeconds {
+                if let reason = ProbeArguments.spanCoversTheRun(
+                    requested: requested, required: requiredSpan) {
+                    refuse(reason)
+                }
+                switch timeline.setVisibleSpan(seconds: requested) {
+                case .applied(let ticksPerPoint, let width):
+                    spanReport = String(
+                        format: "span=%.3f s requested over %.1f pt (ticksPerPoint %.3f)",
+                        requested, width, ticksPerPoint)
+                case .widthUnavailable:
+                    print("PROBE-ARGS: ✘ --playhead-span cannot be applied: the timeline has no width yet")
+                    print("PROBE-ARGS: UNVERIFIED — invocation refused, 1 problem(s); nothing played (§4 rule 6)")
+                    exit(2)
+                case .unattainable(let width, let minSeconds, let maxSeconds):
+                    print(String(
+                        format: "PROBE-ARGS: ✘ --playhead-span %g s is outside what this %.1f pt timeline can show (%.3f s … %.1f s); refusing rather than clamping — a clamped zoom is a measurement condition the log would misreport",
+                        requested, width, minSeconds, maxSeconds))
+                    print("PROBE-ARGS: UNVERIFIED — invocation refused, 1 problem(s); nothing played (§4 rule 6)")
+                    exit(2)
+                }
+            } else if let current = timeline.currentVisibleSpan() {
+                // Not controlled, still stated: A-43 ① went unnoticed
+                // precisely because no line in the log said what the screen
+                // was showing.
+                spanReport = String(
+                    format: "span=%.3f s NOT CONTROLLED over %.1f pt (ticksPerPoint %.3f, default zoom)",
+                    current.seconds, current.widthPoints, current.ticksPerPoint)
+            }
+        } else if spanSeconds != nil {
+            print("PROBE-ARGS: ✘ --playhead-span cannot be applied: no timeline view exists in this process")
+            print("PROBE-ARGS: UNVERIFIED — invocation refused, 1 problem(s); nothing played (§4 rule 6)")
+            exit(2)
+        }
+
+        print("PLAYHEAD: \(url.lastPathComponent) rate=\(rate?.rawValue ?? "?") frames=\(playback.frameCount) \(spanReport) hasVideoTrack=\(playback.sessionHasVideoTrack)")
 
         var failures: [String] = []
         var committedByOffset: [Int: [Int]] = [:]
@@ -366,6 +467,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         failures.forEach { print("PLAYHEAD-GATE: ✘ \($0)") }
         print("PLAYHEAD-GATE: FAIL — \(failures.count) problem(s)")
         exit(1)
+    }
+
+    /// The document window's timeline view, for `--playhead-span`. The
+    /// probe reaches it through the real view hierarchy rather than through
+    /// a back channel: the zoom that matters is the one on the screen the
+    /// person is looking at.
+    private static func timelineView() -> TimelineMetalView? {
+        func search(_ view: NSView) -> TimelineMetalView? {
+            if let found = view as? TimelineMetalView { return found }
+            for subview in view.subviews {
+                if let found = search(subview) { return found }
+            }
+            return nil
+        }
+        for window in NSApp.windows {
+            if let root = window.contentView, let found = search(root) { return found }
+        }
+        return nil
     }
 
     // MARK: - Churn probe (M2.3 r2 task 6)
@@ -501,14 +620,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// flag must end in OWNERSHIP: FAIL / exit 1, or the gate is
     /// decorative. A gate nobody has ever seen fail is untested.
     private static var deliberateLeakForGateTest: GyeolDocumentFile?
-
-    private static func g5ProbeURL() -> URL? {
-        let args = CommandLine.arguments
-        guard let flag = args.firstIndex(of: "--g5-probe"), args.indices.contains(flag + 1) else {
-            return nil
-        }
-        return URL(fileURLWithPath: args[flag + 1])
-    }
 
     private func runG5Probe(documentAt url: URL) {
         NSDocumentController.shared.openDocument(

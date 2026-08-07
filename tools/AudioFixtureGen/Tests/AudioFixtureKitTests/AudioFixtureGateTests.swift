@@ -22,6 +22,7 @@ private let fixtureNames = [
     "click-control",
     "click-control-weak",
     "mute-one",
+    "tone-envelope-long-a",
 ]
 
 private func makeTempDirectory() throws -> URL {
@@ -209,6 +210,82 @@ private func makeTempDirectory() throws -> URL {
         #expect(peak(secondsFrom: 2, to: 3) == 0)        // silence
         #expect(peak(secondsFrom: 3, to: 5) == 4_096)    // 0.125 × 32767, rounded
         #expect(peak(secondsFrom: 5, to: 6) == 0)
+    }
+
+    /// The long envelope is the SAME 6 s period as the short one, so the
+    /// person judges the same kind of peak pattern — asserted at the front
+    /// AND at the very last period, because "same shape" is the whole
+    /// reason A-43's numbers stay comparable across the two fixtures.
+    @Test func longEnvelopeRepeatsTheSameSixSecondPeriod() {
+        let samples = ToneSignal.samples(
+            sampleRate: 48_000, frequencyHz: 220,
+            segments: AudioFixtures.toneEnvelopeLong.segments)
+        #expect(samples.count == 180 * 48_000)
+        func peak(_ from: Int, _ to: Int) -> Int {
+            samples[(from * 48_000)..<(to * 48_000)].map { Int(abs(Int32($0))) }.max() ?? 0
+        }
+        for period in [0, 29] {  // first and last of the thirty
+            let base = period * 6
+            #expect(peak(base + 0, base + 2) == 16_384)
+            #expect(peak(base + 2, base + 3) == 0)
+            #expect(peak(base + 3, base + 5) == 4_096)
+            #expect(peak(base + 5, base + 6) == 0)
+        }
+    }
+
+    /// **The content gate must reach past the fingerprint's 4 MiB prefix,
+    /// sample for sample, or nothing checks the tail at all.**
+    ///
+    /// `tone-envelope-long.wav` is the first fixture bigger than the prefix
+    /// (4 MiB ÷ 2 bytes ÷ 48000 ≈ 43.7 s of 180 s), so the stored
+    /// `contentFingerprint` covers only the first quarter of it and is
+    /// STRUCTURALLY blind to the rest. §4 rule 7: a gate does not double as
+    /// another one, and the direction that fails here is real, not
+    /// hypothetical — a `+1` at sample 7,000,000 leaves the fingerprint gate
+    /// green.
+    ///
+    /// A peak check would not do: `+1` on a non-peak sample does not move a
+    /// maximum. The invariant used instead covers EVERY sample — 220 Hz × 6 s
+    /// is 1320 whole periods, so the oscillator realigns at every envelope
+    /// period and the file is exactly periodic with period 6 s. Comparing
+    /// each later period against the first one therefore checks all
+    /// 8,640,000 samples, and the only region it does not cover (the first
+    /// period) is the one the fingerprint does.
+    @Test func longEnvelopeIsExactlyPeriodicPastTheFingerprintPrefix() {
+        let samples = ToneSignal.samples(
+            sampleRate: 48_000, frequencyHz: 220,
+            segments: AudioFixtures.toneEnvelopeLong.segments)
+        let period = 6 * 48_000
+        #expect(220 * period % 48_000 == 0)  // the realignment this rests on
+        let prefixSamples = AudioFixtures.fingerprintPrefixLength / 2
+        let head = Array(samples[0..<period])
+        var comparedPastPrefix = 0
+        for index in 1..<30 {
+            let base = index * period
+            #expect(Array(samples[base..<(base + period)]) == head,
+                    "period \(index) (t=\(index * 6) s) differs from the first")
+            if base >= prefixSamples { comparedPastPrefix += 1 }
+        }
+        // §4 rule 3: a pass that compared nothing past the prefix would be
+        // indistinguishable from a pass that did.
+        #expect(comparedPastPrefix == 22)
+    }
+
+    /// Phase continuity has to hold at the END of the long file too: the
+    /// accumulator is `(f × i) mod sr`, and the claim that it never drifts
+    /// is worth nothing if it is only ever checked in the first 5 s.
+    @Test func longEnvelopePhaseHoldsAtTheEnd() {
+        let samples = ToneSignal.samples(
+            sampleRate: 48_000, frequencyHz: 220,
+            segments: AudioFixtures.toneEnvelopeLong.segments)
+        // 220 Hz × 180 s = 39,600 whole periods, so the file both starts and
+        // would resume on a zero crossing — no edge click without a fade.
+        #expect(samples.first == 0)
+        #expect((220 * samples.count) % 48_000 == 0)
+        // Every tone segment starts on a whole second, and 220 × 1 s is a
+        // whole number of periods, so the first sample of the LAST loud
+        // segment (174 s) is a zero crossing exactly like the first one.
+        #expect(samples[174 * 48_000] == 0)
     }
 
     /// The rounded half-period offset and its residual are part of the

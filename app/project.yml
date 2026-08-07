@@ -63,6 +63,11 @@ targets:
       - path: Sources/App/GyeolDocumentFile.swift
       - path: Sources/App/G5OwnershipClassifier.swift
       - path: Sources/App/MediaResolver.swift
+      # Extracted from GyeolApp.swift precisely so it can be listed here:
+      # GyeolApp.swift carries @main and cannot go into a test bundle, and
+      # the probe refusals (부록 A-43 ②) were verified only by a run log a
+      # person read once.
+      - path: Sources/App/ProbeArguments.swift
       - path: Sources/App/PlaybackController.swift
       - path: Sources/App/DocumentView.swift
       - path: Sources/App/PlayerLayerView.swift

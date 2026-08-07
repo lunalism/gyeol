@@ -22,19 +22,11 @@ import os
 ///   flatter (D3's 여유율 rationale)
 @MainActor
 enum TimelineProbe {
-    static func arguments() -> (packageURL: URL, minutes: Double)? {
-        let args = CommandLine.arguments
-        guard let flag = args.firstIndex(of: "--timeline-probe"),
-              args.indices.contains(flag + 1) else { return nil }
-        var minutes = 0.0
-        if let m = args.firstIndex(of: "--probe-minutes"), args.indices.contains(m + 1),
-           let value = Double(args[m + 1]) {
-            minutes = value
-        }
-        return (URL(fileURLWithPath: args[flag + 1]), minutes)
-    }
-
-    static func run(packageURL: URL, minutes: Double) async {
+    /// Arguments arrive already validated from `ProbeArguments` (부록
+    /// A-43 ②) — this probe used to read `--probe-minutes` and
+    /// `--probe-dump` off `CommandLine` itself, with a silent 0 / nil on
+    /// anything unparseable.
+    static func run(packageURL: URL, minutes: Double, dumpDirectory: URL?) async {
         // App Nap defense (measured): a windowless GUI process gets napped
         // ~30 s in, and every sustained bucket after the first read ~4-5×
         // slower with thermal still nominal — the numbers were measuring
@@ -114,12 +106,7 @@ enum TimelineProbe {
         // `--probe-dump <dir>`: write PNGs of what was rendered, because a
         // sandboxed shell cannot screencapture the GUI — this is the
         // visual verification artifact for the offscreen path.
-        let dumpDir: URL? = {
-            let args = CommandLine.arguments
-            guard let flag = args.firstIndex(of: "--probe-dump"),
-                  args.indices.contains(flag + 1) else { return nil }
-            return URL(fileURLWithPath: args[flag + 1])
-        }()
+        let dumpDir = dumpDirectory
 
         let totalTicks = document.duration.ticks
         let rate = document.settings.frameRate

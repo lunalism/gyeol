@@ -58,6 +58,36 @@ struct TimelineViewport: Equatable {
         return overflow ? Int64.max : end
     }
 
+    // MARK: - Deterministic zoom (부록 A-43 ①)
+
+    /// Seconds visible across `width` points at a given zoom.
+    static func spanSeconds(ticksPerPoint: Double, width: Double) -> Double {
+        ticksPerPoint * width / Double(DocumentTime.timescale)
+    }
+
+    /// The zoom that puts exactly `seconds` on screen across `width` points,
+    /// or `nil` when that falls outside the zoom limits.
+    ///
+    /// Returning `nil` rather than a clamped value is the whole point: the
+    /// span is a MEASUREMENT CONDITION for the waveform-against-hearing
+    /// check, and a silently clamped one is a condition the session log
+    /// reports as the requested value while the screen shows something else.
+    static func ticksPerPoint(forSpanSeconds seconds: Double, width: Double) -> Double? {
+        guard width > 0, seconds.isFinite, seconds > 0 else { return nil }
+        let ticksPerPoint = seconds * Double(DocumentTime.timescale) / width
+        guard ticksPerPoint >= minTicksPerPoint, ticksPerPoint <= maxTicksPerPoint else {
+            return nil
+        }
+        return ticksPerPoint
+    }
+
+    /// The span range this width can actually show — what a refusal names.
+    static func attainableSpanSeconds(width: Double) -> ClosedRange<Double> {
+        let narrowest = spanSeconds(ticksPerPoint: minTicksPerPoint, width: width)
+        let widest = spanSeconds(ticksPerPoint: maxTicksPerPoint, width: width)
+        return narrowest...widest
+    }
+
     // MARK: - Navigation
 
     /// Pan by a point delta (positive = content moves left / later times
